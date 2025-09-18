@@ -218,11 +218,3 @@ A projeção é feita usando o modelo Facebook Prophet, que considera:
 - Feriados e férias escolares
 - Intervalo de confiança
 """)
-
-# Observação / extras (opcional)
-st.markdown("""
-Sugestões adicionais:
-- Esconder projeções de UFs sem dados suficientes para manter a tela mais limpa
-- Exibir o ranking em formato compacto (uma linha por UF) se preferir
-- Expor opções de exportar as tabelas para CSV/Excel
-""")
