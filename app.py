@@ -10,21 +10,26 @@ SHEET_CSV = "https://docs.google.com/spreadsheets/d/e/2PACX-1vS7OOWK8wX0B9ulh_Vt
 
 def parse_br_number(x):
     """
-    Interpreta números no formato BR (ponto como separador de milhares, vírgula como decimal).
-    Retorna float ou NaN.
+    Interpreta números no formato BR (ponto como separador de milhares,
+    vírgula como separador decimal). Retorna float ou NaN.
+    Ex.: "40.917" -> 40917.0, "1.234,56" -> 1234.56
     """
     if pd.isna(x):
         return None
     if isinstance(x, (int, float)):
         return float(x)
-    s = str(x).strip()
-    s = s.replace(" ", "")
+    s = str(x).strip().replace(" ", "")
     if "." in s and "," in s:
+        # "1.234,56" -> removê milhares, vírgula vira ponto
         s = s.replace(".", "")
         s = s.replace(",", ".")
-    elif "," in s:
-        s = s.replace(",", ".")
-    s = ''.join(ch for ch in s if (ch.isdigit() or ch in ".-"))
+    else:
+        if "." in s:
+            # "40.917" -> 40917
+            s = s.replace(".", "")
+        if "," in s:
+            # "447,540" -> 447.540
+            s = s.replace(",", ".")
     try:
         return float(s)
     except:
@@ -35,7 +40,7 @@ def load_data(url):
     df = pd.read_csv(url)
     if "Mês/Ano" in df.columns and "Tentativa de Reserva" in df.columns:
         df = df.rename(columns={"Mês/Ano": "ds", "Tentativa de Reserva": "y"})
-    # Aplicar parsing BR se necessário
+    # Aplicar parsing BR
     if "y" in df.columns:
         df["y"] = df["y"].apply(parse_br_number)
         df["y"] = pd.to_numeric(df["y"], errors="coerce")
@@ -101,21 +106,25 @@ ferias_escolares = pd.DataFrame({
 feriados = pd.concat([feriados_nacionais, ferias_escolares])
 
 # ------------------------
-# Projeção por UF (2025) + Gráficos
+# Meta: projeção 2025 (opcional) armazenada em session_state
 # ------------------------
-# Armazenamento para evitar re-cálculo desnecessário
 if "proj_2025_by_all" not in st.session_state:
     st.session_state["proj_2025_by_all"] = {}
 
-all_ufs = sorted(df["UF"].dropna().unique())
+if "monthly_2025_by_uf_all" not in st.session_state:
+    st.session_state["monthly_2025_by_uf_all"] = {}
 
+# Botão para rodar a projeção 2025 para todas as UFs
 rodar_projecao = st.button("Rodar projeção 2025 para todas as UFs (opcional)")
+
 if rodar_projecao:
-    proj_dict = {}
-    for uf in all_ufs:
+    proj_all = {}
+    monthly_all = {}
+    for uf in sorted(df["UF"].dropna().unique()):
         df_u = df[(df["UF"] == uf)][["ds","y"]].copy()
         if df_u.empty:
-            proj_dict[uf] = 0.0
+            proj_all[uf] = 0.0
+            monthly_all[uf] = pd.DataFrame(columns=['ds','yhat'])
             continue
         model = Prophet(holidays=feriados)
         model.fit(df_u)
@@ -124,13 +133,19 @@ if rodar_projecao:
         forecast = model.predict(future)
         forecast_future = forecast[forecast["ds"] > last_date]
         yhat_2025 = forecast_future[forecast_future["ds"].dt.year == 2025]["yhat"].sum()
-        proj_dict[uf] = float(yhat_2025) if forecast_future is not None else 0.0
-    st.session_state["proj_2025_by_all"] = proj_dict
+        proj_all[uf] = float(yhat_2025) if forecast_future is not None else 0.0
+        monthly_all[uf] = forecast_future[forecast_future["ds"].dt.year == 2025][["ds","yhat"]]
+    st.session_state["proj_2025_by_all"] = proj_all
+    st.session_state["monthly_2025_by_uf_all"] = monthly_all
     st.success("Projeção 2025 para todas as UFs concluída.")
 
-# Projeção por UF (aplica também se o usuário não apertou o botão)
+# Validação de projeção atual
 proj_2025_by_all = st.session_state.get("proj_2025_by_all", {})
+monthly_2025_by_uf_all = st.session_state.get("monthly_2025_by_uf_all", {})
 
+# ------------------------
+# Histórico e Projeção por UF (com dados BR)
+# ------------------------
 st.subheader("🔮 Tendência / Projeção por UF (com Projeção 2025)")
 for uf in ufs_selected:
     df_prophet = df_uf[df_uf["UF"] == uf][["ds","y"]].copy()
@@ -146,11 +161,14 @@ for uf in ufs_selected:
 
     # Projeção 2025 (somatório yhat de 2025)
     proj_2025 = forecast_future[forecast_future["ds"].dt.year == 2025]["yhat"].sum()
-    # Armazena para uso no ranking geral
+    # Armazenar para ranking geral
+    st.session_state.setdefault("proj_2025_by_all", {})
     st.session_state["proj_2025_by_all"][uf] = float(proj_2025) if forecast_future is not None else 0.0
 
-    # Detalhes 2025 (mensal)
+    # Detalhe mensal de 2025 para o UF
     monthly_2025 = forecast_future[forecast_future["ds"].dt.year == 2025][["ds","yhat"]].copy()
+    st.session_state.setdefault("monthly_2025_by_uf_all", {})
+    st.session_state["monthly_2025_by_uf_all"][uf] = monthly_2025
 
     # Histórico
     st.subheader(f"📈 Histórico - {uf}")
@@ -175,7 +193,6 @@ for uf in ufs_selected:
 
     st.metric(label=f"Projeção 2025 (UF {uf})", value=br_float(proj_2025, dec=0))
 
-    # Renomear colunas para BR
     forecast_table.rename(columns={
         "yhat": "Previsão 2025",
         "yhat_lower": "Intervalo Inferior 2025",
@@ -189,77 +206,53 @@ for uf in ufs_selected:
 # ------------------------
 todas_ufs = sorted(df["UF"].dropna().unique())
 
-# Pivot de anos completos (para 2023/2024)
-df_all_years = df.copy()
-df_all_years["Year"] = df_all_years["ds"].dt.year
-pivot_all_years = df_all_years.pivot_table(index="UF", columns="Year", values="y", aggfunc="sum", fill_value=0).reset_index()
-for yr in [2023, 2024, 2025]:
-    if yr not in pivot_all_years.columns:
-        pivot_all_years[yr] = 0
+# Função para soma BR por UF/ano (2023, 2024)
+def soma_por_ano(uf, ano):
+    mask = (df["UF"] == uf) & (df["ds"].dt.year == int(ano))
+    total = df.loc[mask, "y"].sum()
+    return int(total)
 
-def get_year_all(uf, year):
-    row = pivot_all_years[pivot_all_years["UF"] == uf]
-    if not row.empty and year in row.columns:
-        return int(row.iloc[0][year])
-    return 0
-
-# Projeção 2025 para todas as UFs (usa projeção já calculada acima)
-proj_2025_by_uf_all = {}
-monthly_2025_by_uf_all = {}
-
-# Se já tiver projeção de todas as UFs, usa; senão calcula sob demanda
-for uf in todas_ufs:
-    if uf in st.session_state.get("proj_2025_by_all", {}):
-        proj_2025_by_uf_all[uf] = float(st.session_state["proj_2025_by_all"][uf])
-        monthly_2025_by_uf_all[uf] = None
-    else:
-        # inicializa com 0 (vai ser preenchido quando rodar a projeção)
-        proj_2025_by_uf_all[uf] = 0.0
-        monthly_2025_by_uf_all[uf] = None
-
-# Construir ranking agregado
+# Construir ranking geral usando todas as UFs
 ranking_all = pd.DataFrame({"UF": todas_ufs})
-ranking_all["2023 (Executado)"] = ranking_all["UF"].map(lambda uf: get_year_all(uf, 2023))
-ranking_all["2024 (Executado)"] = ranking_all["UF"].map(lambda uf: get_year_all(uf, 2024))
-ranking_all["2025 (Projetado)"] = ranking_all["UF"].map(lambda uf: proj_2025_by_all.get(uf, 0.0) if uf in proj_2025_by_all else 0.0)
 
-ranking_all["Queda 2024/2023 (Real)"] = (ranking_all["2023 (Executado)"] - ranking_all["2024 (Executado)"]).clip(lower=0)
+# 2023/2024 executados
+ranking_all["2023 (Executado)"] = ranking_all["UF"].map(lambda uf: soma_por_ano(uf, 2023))
+ranking_all["2024 (Executado)"] = ranking_all["UF"].map(lambda uf: soma_por_ano(uf, 2024))
+
+# 2025 projetado (do dicionário)
+ranking_all["2025 (Projetado)"] = ranking_all["UF"].map(
+    lambda uf: proj_2025_by_all.get(uf, 0.0) if "proj_2025_by_all" in locals() else 0.0
+)
+
+# Quedas (2025 vs 2023 / 2025 vs 2024)
 ranking_all["Queda 2025/2023 (Proj)"] = (ranking_all["2023 (Executado)"] - ranking_all["2025 (Projetado)"]).clip(lower=0)
 ranking_all["Queda 2025/2024 (Proj)"] = (ranking_all["2024 (Executado)"] - ranking_all["2025 (Projetado)"]).clip(lower=0)
 
-ranking_all["Máxima Queda (Proj)"] = ranking_all[
-    ["Queda 2024/2023 (Real)", "Queda 2025/2023 (Proj)", "Queda 2025/2024 (Proj)"]
-].max(axis=1)
+# Criticidade (maior queda entre as duas)
+ranking_all["Crítica (max entre quedas)"] = ranking_all[["Queda 2025/2023 (Proj)", "Queda 2025/2024 (Proj)"]].max(axis=1)
 
-ranking_all_sorted = ranking_all.sort_values("Máxima Queda (Proj)", ascending=False)
+ranking_all_sorted = ranking_all.sort_values("Crítica (max entre quedas)", ascending=False)
 
+# Exibir com nomes BR
 st.subheader("📊 Ver Ranking Geral - Todas as UFs (Projetado 2025)")
-# Formatando para BR na exibição
-def br_int_or_dash(v):
-    if pd.isna(v):
-        return "-"
-    return br_int(int(v))
-
 display_all = ranking_all_sorted.copy()
 display_all["2023 (Executado)"] = display_all["2023 (Executado)"].apply(br_int)
 display_all["2024 (Executado)"] = display_all["2024 (Executado)"].apply(br_int)
 display_all["2025 (Projetado)"] = display_all["2025 (Projetado)"].apply(lambda v: br_int(int(v)) if not pd.isna(v) else "-")
-display_all["Queda 2024/2023 (Real)"] = display_all["Queda 2024/2023 (Real)"].apply(br_int)
 display_all["Queda 2025/2023 (Proj)"] = display_all["Queda 2025/2023 (Proj)"].apply(br_int)
 display_all["Queda 2025/2024 (Proj)"] = display_all["Queda 2025/2024 (Proj)"].apply(br_int)
-display_all["Máxima Queda (Proj)"] = display_all["Máxima Queda (Proj)"].apply(br_int)
+display_all["Crítica (max entre quedas)"] = display_all["Crítica (max entre quedas)"].apply(br_int)
 
 st.dataframe(
-    display_all[
-        ["UF",
-         "2023 (Executado)",
-         "2024 (Executado)",
-         "2025 (Projetado)",
-         "Queda 2024/2023 (Real)",
-         "Queda 2025/2023 (Proj)",
-         "Queda 2025/2024 (Proj)",
-         "Máxima Queda (Proj)"]
-    ]
+    display_all[[
+        "UF",
+        "2023 (Executado)",
+        "2024 (Executado)",
+        "2025 (Projetado)",
+        "Queda 2025/2023 (Proj)",
+        "Queda 2025/2024 (Proj)",
+        "Crítica (max entre quedas)"
+    ]]
 )
 
 # Detalhe por UF (opcional)
