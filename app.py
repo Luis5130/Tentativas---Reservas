@@ -2,7 +2,6 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 from prophet import Prophet
-from datetime import datetime
 
 # ------------------------
 # Carregar dados do Google Sheets
@@ -12,7 +11,6 @@ SHEET_CSV = "https://docs.google.com/spreadsheets/d/e/2PACX-1vS7OOWK8wX0B9ulh_Vt
 @st.cache_data(ttl=300)
 def load_data(url):
     df = pd.read_csv(url)
-    # Corrigido para o nome real da coluna na planilha
     df = df.rename(columns={"Mês/Ano": "ds", "Tentativa de Reserva": "y"})
     df["ds"] = pd.to_datetime(df["ds"], format="%Y-%m")
     df["y"] = pd.to_numeric(df["y"], errors="coerce")
@@ -29,7 +27,7 @@ uf = st.sidebar.selectbox("Selecione o estado", ufs, index=0)
 
 start_date = st.sidebar.date_input("Data inicial", df["ds"].min())
 end_date = st.sidebar.date_input("Data final", df["ds"].max())
-horizon = st.sidebar.slider("Meses a projetar", 1, 12, 6)
+horizon = st.sidebar.slider("Meses a projetar", 1, 24, 12)
 
 # Filtrar dados por UF e período
 df_uf = df[(df["UF"] == uf) & (df["ds"] >= pd.to_datetime(start_date)) & (df["ds"] <= pd.to_datetime(end_date))]
@@ -47,9 +45,10 @@ feriados_nacionais = pd.DataFrame({
 })
 
 ferias_escolares = pd.DataFrame({
-    'holiday': ['Férias Escolares'],
-    'ds': pd.to_datetime(['2023-07-01','2023-07-31']),
-    'lower_window': 0, 'upper_window': 30
+    'holiday': ['Férias Escolares', 'Férias Escolares'],
+    'ds': pd.to_datetime(['2023-07-01', '2023-12-15']),
+    'lower_window': [0, 0],
+    'upper_window': [30, 47]  # Julho: 31 dias, Dez/Jan: 48 dias
 })
 
 feriados = pd.concat([feriados_nacionais, ferias_escolares])
@@ -128,38 +127,20 @@ df_ranking["Ano"] = df_ranking["ds"].dt.year
 ranking = df_ranking.pivot_table(index="UF", columns="Ano", values="y", aggfunc="sum").reset_index()
 
 # Comparação dinâmica
+base_ano = 2023
 for ano in ranking.columns[1:]:
     if ano != "UF":
-        ranking[f"Perda Absoluta {ano}"] = ranking[2023] - ranking[ano]
-        ranking[f"Variação (%) {ano}"] = ((ranking[ano] - ranking[2023]) / ranking[2023]) * 100
+        if int(ano) > 2025:
+            # Projeção futura compara com 2025
+            ranking[f"Perda Absoluta {ano}"] = ranking[2025] - ranking[ano]
+        else:
+            ranking[f"Perda Absoluta {ano}"] = ranking[base_ano] - ranking[ano]
 
-# Ordenar pelo maior impacto absoluto (último ano)
-ranking_cols = [col for col in ranking.columns if "Perda Absoluta" in col]
-ranking_sorted = ranking.sort_values(ranking_cols[-1], ascending=False)
-st.dataframe(ranking_sorted[["UF"] + ranking_cols + [col for col in ranking.columns if "Variação" in col]].head(10))
+# Ranking pelo maior impacto absoluto
+ranking["Max Perda Absoluta"] = ranking[[col for col in ranking.columns if "Perda Absoluta" in col]].max(axis=1)
+ranking_sorted = ranking.sort_values("Max Perda Absoluta", ascending=False)
 
-# ------------------------
-# Ranking Nacional Agregado
-# ------------------------
-st.subheader("🌐 Ranking Nacional - Perda Absoluta Total")
-df_nacional = df.groupby("ds")["y"].sum().reset_index()
-df_nacional["Ano"] = df_nacional["ds"].dt.year
-ranking_nac = df_nacional.pivot_table(index="Ano", values="y", aggfunc="sum").reset_index()
-
-ranking_nac["Perda Absoluta"] = 0
-ranking_nac["Variação (%)"] = 0
-anos = ranking_nac["Ano"].tolist()
-
-for ano in anos:
-    base_year = 2023 if ano <= 2025 else 2025
-    if base_year in ranking_nac["Ano"].values and ano in ranking_nac["Ano"].values:
-        base_val = ranking_nac.loc[ranking_nac["Ano"]==base_year, "y"].values[0]
-        atual_val = ranking_nac.loc[ranking_nac["Ano"]==ano, "y"].values[0]
-        ranking_nac.loc[ranking_nac["Ano"]==ano, "Perda Absoluta"] = base_val - atual_val
-        ranking_nac.loc[ranking_nac["Ano"]==ano, "Variação (%)"] = ((atual_val - base_val)/base_val)*100
-
-ranking_nac_sorted = ranking_nac.sort_values("Perda Absoluta", ascending=False)
-st.dataframe(ranking_nac_sorted[["Ano", "y","Perda Absoluta","Variação (%)"]])
+st.dataframe(ranking_sorted[["UF","Max Perda Absoluta"] + [col for col in ranking_sorted.columns if "Perda Absoluta" in col]])
 
 # ------------------------
 # Explicativo
@@ -167,10 +148,10 @@ st.dataframe(ranking_nac_sorted[["Ano", "y","Perda Absoluta","Variação (%)"]])
 st.markdown("""
 ### ℹ️ Como é calculada a tendência
 A projeção é feita usando o modelo **Facebook Prophet**, que considera:
-- **Tendência de longo prazo** (crescimento ou queda ao longo do tempo)
-- **Sazonalidade anual e mensal** (feriados e férias escolares)
-- **Intervalo de confiança** (faixa de incerteza na previsão)
+- **Tendência de longo prazo** (crescimento ou queda ao longo do tempo)  
+- **Sazonalidade** (padrões anuais, mensais e semanais)  
+- **Feriados e férias escolares** (como Natal, Ano Novo e períodos de férias)  
+- **Intervalo de confiança** (faixa de incerteza na previsão)  
 
-As perdas absolutas mostram onde já houve queda histórica
-e a projeção indica onde provavelmente você perderá mais se nada for feito.
+O ranking de perdas mostra **onde a queda absoluta é maior** em cada UF, permitindo focar nas regiões críticas.
 """)
