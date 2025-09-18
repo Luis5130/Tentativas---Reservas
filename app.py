@@ -4,7 +4,7 @@ import plotly.express as px
 from prophet import Prophet
 
 # URL do Google Sheets publicado como CSV
-SHEET_CSV = "https://docs.google.com/spreadsheets/d/e/SEU_LINK/pub?output=csv"
+SHEET_CSV = "https://docs.google.com/spreadsheets/d/e/2PACX-1vS7OOWK8wX0B9ulh_Vtmv-R_pbVREiwknncX8oSvnZ4o5wf00gcFhyEEgo3kxW0PmturRda4wL5OCNn/pub?gid=145140176&single=true&output=csv"
 
 @st.cache_data(ttl=300)
 def load_data(url):
