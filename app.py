@@ -161,17 +161,53 @@ for uf in ufs_selected:
 
     # Gráfico único com histórico + projeção (2 traces)
     fig = go.Figure()
-    fig.add_trace(go.Scatter(x=df_prophet["ds"], y=df_prophet["y"], mode="lines", name="Histórico"))
+
+    # Histórico
+    fig.add_trace(go.Scatter(
+        x=df_prophet["ds"],
+        y=df_prophet["y"],
+        mode="lines",
+        name="Histórico",
+        hovertemplate="Data: %{x|%b/%Y}<br>Reservas: %{y:.0f}"
+    ))
+
+    # Projeção 2025
     if not forecast_future.empty:
-        fig.add_trace(go.Scatter(x=forecast_future["ds"], y=forecast_future["yhat"], mode="lines", name="Projeção 2025"))
-        fig.add_trace(go.Scatter(x=forecast_future["ds"], y=forecast_future["yhat_lower"], mode="lines", line=dict(dash="dot", color="gray"), name="Intervalo Inferior 2025"))
-        fig.add_trace(go.Scatter(x=forecast_future["ds"], y=forecast_future["yhat_upper"], mode="lines", line=dict(dash="dot", color="gray"), name="Intervalo Superior 2025"))
-    fig.update_layout(title=f"Histórico + Projeção - {uf}", xaxis_title="Data", yaxis_title="Reservas",
-                      xaxis=dict(rangeselector=dict(buttons=[dict(count=12, label="12m", step="month", stepmode="backward"),
-                                                           dict(step="all")]), type="date"))
+        fig.add_trace(go.Scatter(
+            x=forecast_future["ds"],
+            y=forecast_future["yhat"],
+            mode="lines",
+            name="Projeção 2025",
+            hovertemplate="Data: %{x|%b/%Y}<br>Projeção 2025: %{yhat:.0f}"
+        ))
+        # Intervalos (inferior e superior)
+        fig.add_trace(go.Scatter(
+            x=forecast_future["ds"],
+            y=forecast_future["yhat_lower"],
+            mode="lines",
+            line=dict(dash="dot", color="gray"),
+            name="Intervalo Inferior 2025",
+            hovertemplate="Data: %{x|%b/%Y}<br>Inferior: %{yhat_lower:.0f}"
+        ))
+        fig.add_trace(go.Scatter(
+            x=forecast_future["ds"],
+            y=forecast_future["yhat_upper"],
+            mode="lines",
+            line=dict(dash="dot", color="gray"),
+            name="Intervalo Superior 2025",
+            hovertemplate="Data: %{x|%b/%Y}<br>Superior: %{yhat_upper:.0f}"
+        ))
+
+    fig.update_layout(
+        title=f"Histórico + Projeção - {uf}",
+        xaxis_title="Data",
+        yaxis_title="Reservas",
+        yaxis=dict(tickformat="d"),  # exibe inteiros sem decimais
+        hovermode="closest"
+    )
     st.plotly_chart(fig, use_container_width=True)
 
-    # Tabela de Projeção 2025
+    # Tabela de Projeção 2025 (se houver)
     if not forecast_future.empty:
         forecast_table = forecast_future[["ds","yhat","yhat_lower","yhat_upper"]].copy()
         forecast_table["Mês/Ano"] = forecast_table["ds"].dt.strftime("%b/%Y")
