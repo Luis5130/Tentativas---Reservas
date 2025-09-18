@@ -1,59 +1,46 @@
 import streamlit as st
 import pandas as pd
-import plotly.express as px
 from prophet import Prophet
+import plotly.express as px
 
-# URL do Google Sheets publicado como CSV
-SHEET_CSV = "https://docs.google.com/spreadsheets/d/e/2PACX-1vS7OOWK8wX0B9ulh_Vtmv-R_pbVREiwknncX8oSvnZ4o5wf00gcFhyEEgo3kxW0PmturRda4wL5OCNn/pub?gid=145140176&single=true&output=csv"
+# ------------------------
+# Carregar os dados
+# ------------------------
+df = pd.read_csv("dados.csv")  # ajuste para seu arquivo
+df["ds"] = pd.to_datetime(df["ds"])
+df = df.rename(columns={"valor": "y"})
 
-@st.cache_data(ttl=300)
-def load_data(url):
-    df = pd.read_csv(url)
-    df["Mês/ Ano"] = pd.to_datetime(df["Mês/ Ano"], format="%Y-%m")
-    return df
-
-df = load_data(SHEET_CSV)
-
-st.title("📊 Tendência de Reservas + Projeção")
-
-# Sidebar: seleção de estado
-ufs = sorted(df["UF"].unique())
-uf = st.sidebar.selectbox("Selecione o estado", ufs, index=0)
-
-# Sidebar: seleção do período
-start_date = st.sidebar.date_input("Data inicial", df["Mês/ Ano"].min())
-end_date = st.sidebar.date_input("Data final", df["Mês/ Ano"].max())
-
-# Sidebar: meses a projetar
-horizon = st.sidebar.slider("Meses a projetar", 1, 12, 6)
-
-# Sidebar: exibir gráficos
-show_hist = st.sidebar.checkbox("Exibir gráfico histórico", True)
-show_forecast = st.sidebar.checkbox("Exibir gráfico de tendência", True)
-show_combined = st.sidebar.checkbox("Exibir gráfico combinado (Histórico + Tendência)", True)
-
-# Filtrar dados
-df_uf = df[(df["UF"] == uf) & (df["Mês/ Ano"] >= pd.to_datetime(start_date)) & (df["Mês/ Ano"] <= pd.to_datetime(end_date))]
-df_prophet = df_uf[["Mês/ Ano", "Tentativa de Reserva"]].rename(columns={"Mês/ Ano": "ds", "Tentativa de Reserva": "y"})
-
-# Modelo Prophet
+# ------------------------
+# Rodar Prophet
+# ------------------------
 model = Prophet()
-model.fit(df_prophet)
+model.fit(df)
 
-future = model.make_future_dataframe(periods=horizon, freq="MS")
+future = model.make_future_dataframe(periods=12, freq="M")
 forecast = model.predict(future)
 
-# Última data com dado real
-last_date = df_prophet["ds"].max()
-
-# Previsão somente futuro
+# Última data real
+last_date = df["ds"].max()
 forecast_future = forecast[forecast["ds"] > last_date]
 
-# ---- GRÁFICO 1: Histórico ----
+# ------------------------
+# Sidebar com opções
+# ------------------------
+st.sidebar.header("⚙️ Opções de Visualização")
+show_hist = st.sidebar.checkbox("Mostrar Histórico", value=True)
+show_forecast = st.sidebar.checkbox("Mostrar Tendência / Projeção", value=True)
+show_year = st.sidebar.checkbox("Mostrar Comparação Ano a Ano", value=True)
+show_table = st.sidebar.checkbox("Mostrar Tabela de Projeção", value=True)
+
+uf = "Brasil"  # ajuste conforme sua base
+
+# ------------------------
+# Gráfico 1 - Histórico
+# ------------------------
 if show_hist:
     st.subheader("📈 Histórico de Reservas")
     fig_hist = px.line(title=f"Histórico de Reservas - {uf}")
-    fig_hist.add_scatter(x=df_prophet["ds"], y=df_prophet["y"], mode="lines+markers", name="Histórico")
+    fig_hist.add_scatter(x=df["ds"], y=df["y"], mode="lines+markers", name="Histórico")
     fig_hist.update_layout(
         xaxis_title="Data",
         yaxis_title="Tentativas de Reserva",
@@ -62,15 +49,20 @@ if show_hist:
     )
     st.plotly_chart(fig_hist, use_container_width=True)
 
-# ---- GRÁFICO 2: Tendência ----
+# ------------------------
+# Gráfico 2 - Tendência
+# ------------------------
 if show_forecast:
     st.subheader("🔮 Tendência / Projeção de Reservas")
     fig_forecast = px.line(title=f"Projeção de Reservas - {uf}")
-    fig_forecast.add_scatter(x=forecast_future["ds"], y=forecast_future["yhat"], mode="lines", name="Previsão")
-    fig_forecast.add_scatter(x=forecast_future["ds"], y=forecast_future["yhat_lower"], mode="lines",
-                             line=dict(dash="dot", color="gray"), name="Intervalo Inferior")
-    fig_forecast.add_scatter(x=forecast_future["ds"], y=forecast_future["yhat_upper"], mode="lines",
-                             line=dict(dash="dot", color="gray"), name="Intervalo Superior")
+    fig_forecast.add_scatter(x=forecast_future["ds"], y=forecast_future["yhat"],
+                             mode="lines", name="Previsão")
+    fig_forecast.add_scatter(x=forecast_future["ds"], y=forecast_future["yhat_lower"],
+                             mode="lines", line=dict(dash="dot", color="gray"),
+                             name="Intervalo Inferior")
+    fig_forecast.add_scatter(x=forecast_future["ds"], y=forecast_future["yhat_upper"],
+                             mode="lines", line=dict(dash="dot", color="gray"),
+                             name="Intervalo Superior")
     fig_forecast.update_layout(
         xaxis_title="Data",
         yaxis_title="Tentativas de Reserva",
@@ -79,76 +71,48 @@ if show_forecast:
     )
     st.plotly_chart(fig_forecast, use_container_width=True)
 
-# ---- GRÁFICO 3: Combinado ----
-if show_combined:
-    st.subheader("📊 Histórico + Tendência")
-    fig_combined = px.line(title=f"Histórico + Projeção de Reservas - {uf}")
-    fig_combined.add_scatter(x=df_prophet["ds"], y=df_prophet["y"], mode="lines+markers", name="Histórico")
-    fig_combined.add_scatter(x=forecast_future["ds"], y=forecast_future["yhat"], mode="lines", name="Previsão")
-    fig_combined.add_scatter(x=forecast_future["ds"], y=forecast_future["yhat_lower"], mode="lines",
-                             line=dict(dash="dot", color="gray"), name="Intervalo Inferior")
-    fig_combined.add_scatter(x=forecast_future["ds"], y=forecast_future["yhat_upper"], mode="lines",
-                             line=dict(dash="dot", color="gray"), name="Intervalo Superior")
-    fig_combined.update_layout(
+# ------------------------
+# Gráfico 3 - Comparação Ano a Ano
+# ------------------------
+if show_year:
+    st.subheader("📊 Comparação Ano a Ano")
+    df["Ano"] = df["ds"].dt.year
+    fig_year = px.line(df, x="ds", y="y", color="Ano",
+                       title="Comparação de Reservas por Ano")
+    fig_year.update_layout(
         xaxis_title="Data",
         yaxis_title="Tentativas de Reserva",
         template="plotly_white",
         hovermode="x unified"
     )
-    st.plotly_chart(fig_combined, use_container_width=True)
+    st.plotly_chart(fig_year, use_container_width=True)
 
-# ---- Tabela somente meses futuros ----
-if show_forecast:
+# ------------------------
+# Tabela de projeção
+# ------------------------
+if show_table:
     st.subheader("📊 Tabela de Projeção (meses futuros)")
     forecast_table = forecast_future[["ds", "yhat", "yhat_lower", "yhat_upper"]].copy()
     forecast_table["Mês/Ano"] = forecast_table["ds"].dt.strftime("%b/%Y")
-    
-    # Comparação % com último mês real
-    last_real_value = df_prophet.loc[df_prophet["ds"] == last_date, "y"].values[0]
-    forecast_table["Variação % vs Último Real"] = ((forecast_table["yhat"] - last_real_value) / last_real_value) * 100
-
     forecast_table.rename(columns={
         "yhat": "Previsão",
         "yhat_lower": "Intervalo Inferior",
         "yhat_upper": "Intervalo Superior"
     }, inplace=True)
-    forecast_table = forecast_table[["Mês/Ano", "Previsão", "Intervalo Inferior", "Intervalo Superior", "Variação % vs Último Real"]]
-
+    forecast_table = forecast_table[["Mês/Ano", "Previsão", "Intervalo Inferior", "Intervalo Superior"]]
     st.dataframe(forecast_table)
 
-# 📈 Comparação de variação ano a ano
-st.subheader("📊 Variação anual por mês")
-df_variacao = df_uf.copy()
-df_variacao["Ano"] = df_variacao["Mês/ Ano"].dt.year
-df_variacao["Mes"] = df_variacao["Mês/ Ano"].dt.month
+# ------------------------
+# Explicativo da tendência
+# ------------------------
+st.markdown("""
+### ℹ️ Como é calculada a tendência
+A projeção é feita usando o modelo **Facebook Prophet**, que considera:
+- **Tendência de longo prazo**: se o volume cresce ou cai ao longo do tempo.  
+- **Sazonalidade**: repetições anuais, mensais ou semanais detectadas nos dados.  
+- **Intervalo de confiança**: a faixa cinza mostra a incerteza natural da previsão.  
 
-pivot = df_variacao.pivot_table(index="Mes", columns="Ano", values="Tentativa de Reserva", aggfunc="sum")
-
-# Gráfico de barras comparando anos
-fig_var = px.bar(pivot, barmode="group", title=f"Comparação Mensal - {uf}")
-st.plotly_chart(fig_var, use_container_width=True)
-
-st.dataframe(pivot)
-
-# ---- TOP QUEDAS POR UF ----
-st.subheader("📉 Top quedas por UF (ano contra ano)")
-df_all = df.copy()
-df_all["Ano"] = df_all["Mês/ Ano"].dt.year
-df_all["Mes"] = df_all["Mês/ Ano"].dt.month
-
-# Último ano e ano anterior
-ano_max = df_all["Ano"].max()
-ano_prev = ano_max - 1
-
-df_last = df_all[df_all["Ano"] == ano_max].groupby("UF")["Tentativa de Reserva"].sum()
-df_prev = df_all[df_all["Ano"] == ano_prev].groupby("UF")["Tentativa de Reserva"].sum()
-
-df_comp = pd.DataFrame({"AnoAtual": df_last, "AnoAnterior": df_prev})
-df_comp["Variação %"] = ((df_comp["AnoAtual"] - df_comp["AnoAnterior"]) / df_comp["AnoAnterior"]) * 100
-df_comp = df_comp.sort_values("Variação %")
-
-st.dataframe(df_comp.head(5))  # top 5 maiores quedas
-
-fig_topquedas = px.bar(df_comp.head(5), x="Variação %", y=df_comp.head(5).index, orientation="h",
-                       title="Top 5 UFs com maiores quedas (%)", color="Variação %")
-st.plotly_chart(fig_topquedas, use_container_width=True)
+⚠️ Importante: o modelo aprende com os dados históricos.  
+Ou seja, como **2023 foi o melhor ano** e **2024/2025 tiveram queda**,  
+a tendência projetada reflete esse comportamento recente.
+""")
