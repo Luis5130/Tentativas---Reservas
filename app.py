@@ -23,15 +23,14 @@ st.title("📊 Tendência de Reservas + Projeção")
 # Sidebar
 # ------------------------
 ufs = sorted(df["UF"].unique())
-uf = st.sidebar.selectbox("Selecione o estado", ufs, index=0)
+ufs_selected = st.sidebar.multiselect("Selecione os estados", ufs, default=ufs[:1])
 
 start_date = st.sidebar.date_input("Data inicial", df["ds"].min())
 end_date = st.sidebar.date_input("Data final", df["ds"].max())
 horizon = st.sidebar.slider("Meses a projetar", 1, 24, 12)
 
-# Filtrar dados por UF e período
-df_uf = df[(df["UF"] == uf) & (df["ds"] >= pd.to_datetime(start_date)) & (df["ds"] <= pd.to_datetime(end_date))]
-df_prophet = df_uf[["ds", "y"]]
+# Filtrar dados por UF(s) e período
+df_uf = df[df["UF"].isin(ufs_selected) & (df["ds"] >= pd.to_datetime(start_date)) & (df["ds"] <= pd.to_datetime(end_date))]
 
 # ------------------------
 # Feriados nacionais + férias escolares
@@ -54,69 +53,57 @@ ferias_escolares = pd.DataFrame({
 feriados = pd.concat([feriados_nacionais, ferias_escolares])
 
 # ------------------------
-# Modelo Prophet
+# Loop por UF para gerar gráficos e projeção
 # ------------------------
-model = Prophet(holidays=feriados)
-model.fit(df_prophet)
+st.subheader("🔮 Tendência / Projeção por UF")
+for uf in ufs_selected:
+    df_prophet = df_uf[df_uf["UF"] == uf][["ds", "y"]].copy()
+    if df_prophet.empty:
+        continue
 
-future = model.make_future_dataframe(periods=horizon, freq="MS")
-forecast = model.predict(future)
-last_date = df_prophet["ds"].max()
-forecast_future = forecast[forecast["ds"] > last_date]
+    model = Prophet(holidays=feriados)
+    model.fit(df_prophet)
+    future = model.make_future_dataframe(periods=horizon, freq="MS")
+    forecast = model.predict(future)
+    last_date = df_prophet["ds"].max()
+    forecast_future = forecast[forecast["ds"] > last_date]
 
-# ------------------------
-# Gráfico Histórico
-# ------------------------
-st.subheader("📈 Histórico de Reservas")
-fig_hist = px.line(df_prophet, x="ds", y="y", title=f"Histórico - {uf}")
-st.plotly_chart(fig_hist, use_container_width=True)
+    # Gráfico Histórico
+    st.subheader(f"📈 Histórico - {uf}")
+    fig_hist = px.line(df_prophet, x="ds", y="y", title=f"Histórico - {uf}")
+    st.plotly_chart(fig_hist, use_container_width=True)
 
-# ------------------------
-# Gráfico de Tendência / Projeção
-# ------------------------
-st.subheader("🔮 Tendência / Projeção (meses futuros)")
-fig_forecast = px.line(title=f"Projeção de Reservas - {uf}")
-fig_forecast.add_scatter(x=df_prophet["ds"], y=df_prophet["y"], mode="lines+markers", name="Histórico")
-fig_forecast.add_scatter(x=forecast_future["ds"], y=forecast_future["yhat"], mode="lines", name="Previsão")
-fig_forecast.add_scatter(x=forecast_future["ds"], y=forecast_future["yhat_lower"], mode="lines",
-                         line=dict(dash="dot", color="gray"), name="Intervalo Inferior")
-fig_forecast.add_scatter(x=forecast_future["ds"], y=forecast_future["yhat_upper"], mode="lines",
-                         line=dict(dash="dot", color="gray"), name="Intervalo Superior")
-st.plotly_chart(fig_forecast, use_container_width=True)
+    # Gráfico de Tendência
+    st.subheader(f"📊 Projeção - {uf}")
+    fig_forecast = px.line(title=f"Projeção de Reservas - {uf}")
+    fig_forecast.add_scatter(x=df_prophet["ds"], y=df_prophet["y"], mode="lines+markers", name="Histórico")
+    fig_forecast.add_scatter(x=forecast_future["ds"], y=forecast_future["yhat"], mode="lines", name="Previsão")
+    fig_forecast.add_scatter(x=forecast_future["ds"], y=forecast_future["yhat_lower"], mode="lines",
+                             line=dict(dash="dot", color="gray"), name="Intervalo Inferior")
+    fig_forecast.add_scatter(x=forecast_future["ds"], y=forecast_future["yhat_upper"], mode="lines",
+                             line=dict(dash="dot", color="gray"), name="Intervalo Superior")
+    st.plotly_chart(fig_forecast, use_container_width=True)
 
-# ------------------------
-# Tabela de Projeção com % vs anos anteriores
-# ------------------------
-st.subheader("📊 Tabela de Projeção")
-forecast_table = forecast_future[["ds", "yhat", "yhat_lower", "yhat_upper"]].copy()
-forecast_table["Mês/Ano"] = forecast_table["ds"].dt.strftime("%b/%Y")
+    # Tabela de projeção com variação %
+    st.subheader(f"📊 Tabela de Projeção - {uf}")
+    forecast_table = forecast_future[["ds", "yhat", "yhat_lower", "yhat_upper"]].copy()
+    forecast_table["Mês/Ano"] = forecast_table["ds"].dt.strftime("%b/%Y")
 
-anos = sorted(df_uf["ds"].dt.year.unique())
-for ano in anos:
-    df_ano = df_uf[df_uf["ds"].dt.year == ano].set_index(df_uf["ds"].dt.month)
-    forecast_table[f"Vs {ano} (%)"] = forecast_table["ds"].dt.month.map(
-        lambda m: ((forecast_table.set_index(forecast_table["ds"].dt.month)["yhat"][m] - df_ano["y"].get(m, None)) / df_ano["y"].get(m, None) * 100)
-        if df_ano["y"].get(m, None) not in [None, 0] else None
-    )
+    anos = sorted(df_prophet["ds"].dt.year.unique())
+    for ano in anos:
+        df_ano = df_prophet[df_prophet["ds"].dt.year == ano].copy()
+        df_ano["Mês"] = df_ano["ds"].dt.month
+        df_ano.set_index("Mês", inplace=True)
+        forecast_table[f"Vs {ano} (%)"] = forecast_table["ds"].dt.month.map(
+            lambda m: ((forecast_table.set_index(forecast_table["ds"].dt.month)["yhat"].get(m,0) - df_ano["y"].get(m,0)) / df_ano["y"].get(m,1) * 100)
+        )
 
-forecast_table.rename(columns={
-    "yhat": "Previsão",
-    "yhat_lower": "Intervalo Inferior",
-    "yhat_upper": "Intervalo Superior"
-}, inplace=True)
-
-st.dataframe(forecast_table[["Mês/Ano","Previsão","Intervalo Inferior","Intervalo Superior"] + [col for col in forecast_table.columns if "Vs" in col]])
-
-# ------------------------
-# Comparação Ano a Ano
-# ------------------------
-st.subheader("📊 Comparação Ano a Ano")
-df_variacao = df_uf.copy()
-df_variacao["Ano"] = df_variacao["ds"].dt.year
-df_variacao["Mês"] = df_variacao["ds"].dt.month
-fig_year = px.line(df_variacao, x="Mês", y="y", color="Ano", markers=True,
-                   title=f"Comparação de Reservas por Ano - {uf}")
-st.plotly_chart(fig_year, use_container_width=True)
+    forecast_table.rename(columns={
+        "yhat": "Previsão",
+        "yhat_lower": "Intervalo Inferior",
+        "yhat_upper": "Intervalo Superior"
+    }, inplace=True)
+    st.dataframe(forecast_table[["Mês/Ano","Previsão","Intervalo Inferior","Intervalo Superior"] + [col for col in forecast_table.columns if "Vs" in col]])
 
 # ------------------------
 # Ranking de Maiores Quedas por UF
@@ -131,15 +118,12 @@ base_ano = 2023
 for ano in ranking.columns[1:]:
     if ano != "UF":
         if int(ano) > 2025:
-            # Projeção futura compara com 2025
             ranking[f"Perda Absoluta {ano}"] = ranking[2025] - ranking[ano]
         else:
             ranking[f"Perda Absoluta {ano}"] = ranking[base_ano] - ranking[ano]
 
-# Ranking pelo maior impacto absoluto
 ranking["Max Perda Absoluta"] = ranking[[col for col in ranking.columns if "Perda Absoluta" in col]].max(axis=1)
 ranking_sorted = ranking.sort_values("Max Perda Absoluta", ascending=False)
-
 st.dataframe(ranking_sorted[["UF","Max Perda Absoluta"] + [col for col in ranking_sorted.columns if "Perda Absoluta" in col]])
 
 # ------------------------
