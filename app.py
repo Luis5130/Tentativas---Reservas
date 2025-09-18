@@ -11,13 +11,13 @@ SHEET_CSV = "https://docs.google.com/spreadsheets/d/e/2PACX-1vS7OOWK8wX0B9ulh_Vt
 @st.cache_data(ttl=300)
 def load_data(url):
     df = pd.read_csv(url)
-    # Espera: colunas xUF, ds (data), y (inteiro)
+    # Se a planilha vier com Mês/Ano e Tentativa de Reserva, renomeie para ds/y
     if "Mês/Ano" in df.columns and "Tentativa de Reserva" in df.columns:
         df = df.rename(columns={"Mês/Ano": "ds", "Tentativa de Reserva": "y"})
     # ds -> datetime
     if "ds" in df.columns:
         df["ds"] = pd.to_datetime(df["ds"], errors="coerce")
-    # y -> numeric inteiro (sem parsing BR)
+    # y -> numérica (inteiro)
     if "y" in df.columns:
         df["y"] = pd.to_numeric(df["y"], errors="coerce").astype('Int64')
     return df
@@ -30,9 +30,23 @@ if "UF" not in df.columns:
     st.stop()
 
 # ------------------------
+# Funções utilitárias
+# ------------------------
+def mes_br_port(dt):
+    # representa mês/ano em formato curto (jan/2025)
+    month_names = {
+        1: "jan", 2: "fev", 3: "mar", 4: "abr",
+        5: "mai", 6: "jun", 7: "jul", 8: "ago",
+        9: "set", 10: "out", 11: "nov", 12: "dez"
+    }
+    m = int(dt.month)
+    y = dt.year
+    return f"{month_names[m]}/{y}"
+
+# ------------------------
 # Título
 # ------------------------
-st.title("Tentativa de Reservas + Tendência")
+st.title("Tentativa de Reservas + Tendência (sem parsing BR)")
 
 # ------------------------
 # Sidebar: UF + Período
@@ -49,11 +63,10 @@ df_uf = df[(df["UF"].isin(ufs_selected)) & (df["ds"] >= pd.to_datetime(start_dat
 
 # ------------------------
 # Feriados nacionais + férias escolares
-# (Mantém apenas se quiser; pode comentar)
 # ------------------------
 feriados_nacionais = pd.DataFrame({
     'holiday': ['Confraternização', 'Carnaval', 'Paixão de Cristo', 'Tiradentes', 'Dia do Trabalho', 'Corpus Christi', 'Independência', 'Nossa Senhora Aparecida', 'Finados', 'Proclamação da República'],
-    'ds': pd.to_datetime(['2023-01-01','2023-02-20','2023-04-07','2023-04-21','2023-05-01','2023-06-08','2023-09-07','2023-10-12','2023-11-02','2023-11-15']),
+    'ds': pd.to_datetime(['2023-01-01','2023-02-20','2023-04-07','2023-04-21','2023-05-01', '2023-06-08','2023-09-07','2023-10-12','2023-11-02','2023-11-15']),
     'lower_window': 0,
     'upper_window': 1
 })
@@ -77,7 +90,6 @@ def compute_projection_all(all_uf, horizon, feriados):
             proj[uf] = 0.0
             monthly[uf] = pd.DataFrame(columns=['ds','yhat'])
             continue
-        # Converter y para float para o Prophet
         df_u["y"] = df_u["y"].astype(float)
         model = Prophet(holidays=feriados)
         model.fit(df_u)
@@ -106,7 +118,7 @@ for uf in ufs_selected:
     if df_prophet.empty:
         continue
 
-    # Garantir que y seja inteiro para exibir corretamente
+    # Garantir que y seja inteiro
     df_prophet["y"] = df_prophet["y"].astype(int)
 
     # Construir modelo e previsão
@@ -123,7 +135,7 @@ for uf in ufs_selected:
         forecast_future["yhat_lower"] = forecast_future["yhat_lower"].round().astype(int)
         forecast_future["yhat_upper"] = forecast_future["yhat_upper"].round().astype(int)
 
-    # Gráfico único com histórico + projeção (2 traces)
+    # Gráfico único com histórico + projeção (2 traces) + banda
     fig = go.Figure()
 
     # Histórico
@@ -142,24 +154,26 @@ for uf in ufs_selected:
             y=forecast_future["yhat"],
             mode="lines",
             name="Projeção 2025",
-            hovertemplate="Data: %{x|%b/%Y}<br>Projeção 2025: %{yhat:.0f}"
+            hovertemplate="Data: %{x|%b/%Y}<br>Projeção 2025: %{y:.0f}"
         ))
-        # Intervalos (inferior e superior)
-        fig.add_trace(go.Scatter(
-            x=forecast_future["ds"],
-            y=forecast_future["yhat_lower"],
-            mode="lines",
-            line=dict(dash="dot", color="gray"),
-            name="Intervalo Inferior 2025",
-            hovertemplate="Data: %{x|%b/%Y}<br>Inferior: %{yhat_lower:.0f}"
-        ))
+        # Banda de incerteza ( Superior e Inferior )
         fig.add_trace(go.Scatter(
             x=forecast_future["ds"],
             y=forecast_future["yhat_upper"],
             mode="lines",
             line=dict(dash="dot", color="gray"),
             name="Intervalo Superior 2025",
-            hovertemplate="Data: %{x|%b/%Y}<br>Superior: %{yhat_upper:.0f}"
+            hovertemplate="Data: %{x|%b/%Y}<br>Superior: %{y:.0f}"
+        ))
+        fig.add_trace(go.Scatter(
+            x=forecast_future["ds"],
+            y=forecast_future["yhat_lower"],
+            mode="lines",
+            line=dict(dash="dot", color="gray"),
+            name="Intervalo Inferior 2025",
+            hovertemplate="Data: %{x|%b/%Y}<br>Inferior: %{y:.0f}",
+            fill="tonexty",
+            fillcolor="rgba(128,128,128,0.15)"
         ))
 
     fig.update_layout(
@@ -174,14 +188,21 @@ for uf in ufs_selected:
     # Tabela de Projeção 2025 (se houver)
     if not forecast_future.empty:
         forecast_table = forecast_future[["ds","yhat","yhat_lower","yhat_upper"]].copy()
-        forecast_table["Mês/Ano"] = forecast_table["ds"].dt.strftime("%b/%Y")
+        forecast_table["Mês/Ano"] = forecast_table["ds"].apply(lambda d: mes_br_port(pd.Timestamp(d)))
         forecast_table.rename(columns={
             "yhat": "Previsão 2025",
             "yhat_lower": "Intervalo Inferior 2025",
             "yhat_upper": "Intervalo Superior 2025"
         }, inplace=True)
-        forecast_table["Mês/Ano"] = forecast_table["ds"].apply(lambda d: d.strftime("%b/%Y"))
+        forecast_table["Mês/Ano"] = forecast_table["ds"].apply(lambda d: mes_br_port(d))
         st.dataframe(forecast_table[["Mês/Ano","Previsão 2025","Intervalo Inferior 2025","Intervalo Superior 2025"]])
+
+        st.download_button(
+            label="Exportar Projeção 2025 (CSV)",
+            data=forecast_table[["Mês/Ano","Previsão 2025","Intervalo Inferior 2025","Intervalo Superior 2025"]].to_csv(index=False).encode('utf-8'),
+            file_name=f"projecao_2025_{uf}.csv",
+            mime="text/csv"
+        )
 
     # Resumo da UF (opcional)
     total_2023_uf = int(df[(df["UF"] == uf) & (df["ds"].dt.year == 2023)]['y'].sum())
