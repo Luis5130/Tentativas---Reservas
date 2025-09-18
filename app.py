@@ -6,7 +6,7 @@ import plotly.express as px
 # ------------------------
 # Carregar os dados
 # ------------------------
-df = pd.read_csv("dados.csv")  # ajuste para seu arquivo
+df = pd.read_csv("https://docs.google.com/spreadsheets/d/e/2PACX-1vS7OOWK8wX0B9ulh_Vtmv-R_pbVREiwknncX8oSvnZ4o5wf00gcFhyEEgo3kxW0PmturRda4wL5OCNn/pub?gid=145140176&single=true&output=csv")  # ajuste para seu arquivo
 df["ds"] = pd.to_datetime(df["ds"])
 df = df.rename(columns={"valor": "y"})
 
