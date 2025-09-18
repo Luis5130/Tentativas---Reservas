@@ -207,11 +207,3 @@ A projeção é feita usando o modelo Facebook Prophet, que considera:
 - Feriados e férias escolares
 - Intervalo de confiança (faixa de incerteza na previsão)
 """)
-
-# Observação / extras (opcional)
-st.markdown("""
-Sugestões adicionais:
-- Exportar tabelas para CSV/Excel
-- Verificar sazonalidade mensal por UF com heatmap
-- Ajustar o modelo com dados adicionais para melhor calibração
-""")
