@@ -20,12 +20,15 @@ def parse_br_number(x):
         return float(x)
     s = str(x).strip().replace(" ", "")
     if "." in s and "," in s:
+        # "1.234,56" -> removê milhares, vírgula vira ponto
         s = s.replace(".", "")
         s = s.replace(",", ".")
     else:
         if "." in s:
+            # "40.917" -> 40917
             s = s.replace(".", "")
         if "," in s:
+            # "447,540" -> 447.540
             s = s.replace(",", ".")
     try:
         return float(s)
@@ -37,6 +40,7 @@ def load_data(url):
     df = pd.read_csv(url)
     if "Mês/Ano" in df.columns and "Tentativa de Reserva" in df.columns:
         df = df.rename(columns={"Mês/Ano": "ds", "Tentativa de Reserva": "y"})
+    # Aplicar parsing BR
     if "y" in df.columns:
         df["y"] = df["y"].apply(parse_br_number)
         df["y"] = pd.to_numeric(df["y"], errors="coerce")
@@ -65,10 +69,20 @@ def br_int0(n):
     i = int(n)
     return f"{i:,}".replace(",", ".")
 
-st.title("📊 Tendência de Reservas + Projeção")
+def br_float(n, dec=2):
+    if pd.isna(n):
+        return "-"
+    s = f"{float(n):,.{dec}f}"
+    s = s.replace(",", "X").replace(".", ",").replace("X", ".")
+    return s
 
 # ------------------------
-# Sidebar
+# Título
+# ------------------------
+st.title("Tentativa de Reservas + Tendência")
+
+# ------------------------
+# Sidebar - UF e período
 # ------------------------
 ufs = sorted(df["UF"].dropna().unique())
 ufs_selected = st.sidebar.multiselect("Selecione os estados (UF)", ufs, default=ufs[:1])
@@ -128,60 +142,6 @@ all_ufs = sorted(df["UF"].dropna().unique())
 proj_2025_by_all, monthly_2025_by_uf_all = compute_projection_all(all_ufs, horizon, feriados)
 
 # ------------------------
-# Cards (4 KPIs)
-# ------------------------
-# Totais globais
-total_2023_global = int(df[(df["ds"].dt.year == 2023) & (df["y"].notna())]["y"].sum())
-total_2024_global = int(df[(df["ds"].dt.year == 2024) & (df["y"].notna())]["y"].sum())
-proj_total_2025 = int(sum(proj_2025_by_all.values())) if proj_2025_by_all else 0
-
-# Maior queda projetada (entre 2025/2023 e 2025/2024)
-maior_queda = 0
-uf_maior_queda = None
-
-for uf in all_ufs:
-    y2023 = int(df[(df["UF"] == uf) & (df["ds"].dt.year == 2023)]['y'].sum()) if not df[(df["UF"] == uf) & (df["ds"].dt.year == 2023)].empty else 0
-    y2024 = int(df[(df["UF"] == uf) & (df["ds"].dt.year == 2024)]['y'].sum()) if not df[(df["UF"] == uf) & (df["ds"].dt.year == 2024)].empty else 0
-    proj_u = proj_2025_by_all.get(uf, 0.0)
-    queda_2025_2023 = max(0, y2023 - int(proj_u))
-    queda_2025_2024 = max(0, y2024 - int(proj_u))
-    maxv = max(queda_2025_2023, queda_2025_2024)
-    if maxv > maior_queda:
-        maior_queda = maxv
-        uf_maior_queda = uf
-
-col1, col2, col3, col4 = st.columns(4)
-
-with col1:
-    st.metric(label="Total 2023 (Executado)", value=br_int(total_2023_global))
-with col2:
-    st.metric(label="Total 2024 (Executado)", value=br_int(total_2024_global))
-with col3:
-    st.metric(label="Projeção Total 2025", value=br_int(proj_total_2025))
-with col4:
-    if uf_maior_queda:
-        st.metric(label=f"Maior Queda Projetada (UF {uf_maior_queda})", value=br_int(maior_queda))
-    else:
-        st.metric(label="Maior Queda Projetada", value="-")
-
-# ------------------------
-# Resumo por UF (opcional) para checar AC, SP etc.
-# ------------------------
-uf_detail = st.sidebar.selectbox("Ver detalhes de uma UF (opcional):", ["Nenhum"] + all_ufs)
-if uf_detail != "Nenhum":
-    total_2023_uf = int(df[(df["UF"] == uf_detail) & (df["ds"].dt.year == 2023)]['y'].sum())
-    total_2024_uf = int(df[(df["UF"] == uf_detail) & (df["ds"].dt.year == 2024)]['y'].sum())
-    proj_uf_2025 = int(proj_2025_by_all.get(uf_detail, 0.0))
-    st.markdown(f"Resumo da UF {uf_detail}:")
-    colA, colB, colC = st.columns(3)
-    with colA:
-        st.metric(label="2023 (Executado)", value=br_int(total_2023_uf))
-    with colB:
-        st.metric(label="2024 (Executado)", value=br_int(total_2024_uf))
-    with colC:
-        st.metric(label="Projeção 2025 (UF)", value=br_int(proj_uf_2025))
-
-# ------------------------
 # Histórico e Projeção por UF (com dados BR)
 # ------------------------
 st.subheader("🔮 Histórico e Projeção por UF (selecionadas)")
@@ -201,6 +161,7 @@ for uf in ufs_selected:
     forecast = model.predict(future)
     forecast_future = forecast[forecast["ds"] > last_date]
 
+    # Projeção 2025 (somatório yhat de 2025)
     proj_2025 = forecast_future[forecast_future["ds"].dt.year == 2025]["yhat"].sum()
     st.session_state.setdefault("proj_2025_by_all", {})
     st.session_state["proj_2025_by_all"][uf] = float(proj_2025) if forecast_future is not None else 0.0
@@ -209,10 +170,12 @@ for uf in ufs_selected:
     st.session_state.setdefault("monthly_2025_by_uf_all", {})
     st.session_state["monthly_2025_by_uf_all"][uf] = monthly_2025
 
+    # Histórico
     st.subheader(f"📈 Histórico - {uf}")
     fig_hist = px.line(df_prophet, x="ds", y="y", title=f"Histórico - {uf}")
     st.plotly_chart(fig_hist, use_container_width=True)
 
+    # Projeção
     st.subheader(f"📊 Projeção - {uf}")
     fig_forecast = px.line(title=f"Projeção de Reservas - {uf}")
     fig_forecast.add_scatter(x=df_prophet["ds"], y=df_prophet["y"], mode="lines+markers", name="Histórico")
@@ -223,6 +186,7 @@ for uf in ufs_selected:
                              line=dict(dash="dot", color="gray"), name="Intervalo Superior 2025")
     st.plotly_chart(fig_forecast, use_container_width=True)
 
+    # Tabela de Projeção
     st.subheader(f"📊 Tabela de Projeção - {uf}")
     forecast_table = forecast_future[["ds","yhat","yhat_lower","yhat_upper"]].copy()
     forecast_table["Mês/Ano"] = forecast_table["ds"].dt.strftime("%b/%Y")
