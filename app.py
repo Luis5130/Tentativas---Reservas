@@ -46,7 +46,7 @@ def mes_br_port(dt):
 # ------------------------
 # Título
 # ------------------------
-st.title("Tentativa de Reservas + Tendência (sem parsing BR)")
+st.title("Tentativa de Reservas + Tendência")
 
 # ------------------------
 # Sidebar: UF + Período
