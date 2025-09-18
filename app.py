@@ -151,6 +151,10 @@ for uf in ufs_selected:
     if df_prophet.empty:
         continue
 
+    # Garantir que y seja inteiro para exibir corretamente
+    df_prophet["y"] = pd.to_numeric(df_prophet["y"], errors="coerce").round().astype('Int64')
+    df_prophet = df_prophet.dropna(subset=["y"])
+
     # Construir modelo e previsão
     model = Prophet(holidays=feriados)
     model.fit(df_prophet.rename(columns={"ds":"ds","y":"y"}))
@@ -159,13 +163,19 @@ for uf in ufs_selected:
     forecast = model.predict(future)
     forecast_future = forecast[forecast["ds"] > last_date]
 
+    # Ajustar valores para integer para hover/plot
+    if not forecast_future.empty:
+        forecast_future["yhat"] = forecast_future["yhat"].round().astype(int)
+        forecast_future["yhat_lower"] = forecast_future["yhat_lower"].round().astype(int)
+        forecast_future["yhat_upper"] = forecast_future["yhat_upper"].round().astype(int)
+
     # Gráfico único com histórico + projeção (2 traces)
     fig = go.Figure()
 
     # Histórico
     fig.add_trace(go.Scatter(
         x=df_prophet["ds"],
-        y=df_prophet["y"],
+        y=df_prophet["y"].astype(int),
         mode="lines",
         name="Histórico",
         hovertemplate="Data: %{x|%b/%Y}<br>Reservas: %{y:.0f}"
@@ -202,7 +212,7 @@ for uf in ufs_selected:
         title=f"Histórico + Projeção - {uf}",
         xaxis_title="Data",
         yaxis_title="Reservas",
-        yaxis=dict(tickformat="d"),  # exibe inteiros sem decimais
+        yaxis=dict(tickformat="d"),  # inteiros no eixo
         hovermode="closest"
     )
     st.plotly_chart(fig, use_container_width=True)
@@ -242,4 +252,12 @@ A projeção é feita usando o modelo Facebook Prophet, que considera:
 - Sazonalidade (padrões anuais, mensais e semanais)
 - Feriados e férias escolares
 - Intervalo de confiança (faixa de incerteza na previsão)
+""")
+
+# Observação / extras (opcional)
+st.markdown("""
+Sugestões adicionais:
+- Exportar tabelas para CSV/Excel
+- Verificar sazonalidade mensal por UF com heatmap
+- Ajustar o modelo com dados adicionais para melhor calibração
 """)
