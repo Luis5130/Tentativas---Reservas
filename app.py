@@ -182,21 +182,52 @@ st.subheader("📉 Ranking de Maiores Quedas por UF (Projeção 2025)")
 st.dataframe(ranking_proj_sorted[["UF","Max Queda (Proj)","Queda 2024/2023 (Real)","Queda 2025/2023 (Proj)","Queda 2025/2024 (Proj)"]])
 
 # ------------------------
-# Ranking de Todas as UF - Projetado (Resumo)
+# Ranking Geral - Todas as UFs (Projetado 2025)
 # ------------------------
-# Constrói um ranking consolidado para todas as UF com dados reais de 2023/2024 e projeção 2025
-ranking_all = pd.DataFrame({"UF": ufs_selected})
+# Ranking que mostra todas as UFs (não apenas as selecionadas)
+all_ufs = sorted(df["UF"].dropna().unique())
 
-# 2023 e 2024 executados (reutilizando pivot_years)
-def val_yr(uf, year):
-    row = pivot_years[pivot_years["UF"] == uf]
+# Pivot com todas as UFs para 2023/2024/2025 (dados executados)
+df_all_years = df.copy()
+df_all_years["Year"] = df_all_years["ds"].dt.year
+pivot_all_years = df_all_years.pivot_table(index="UF", columns="Year", values="y", aggfunc="sum", fill_value=0).reset_index()
+
+for yr in [2023, 2024, 2025]:
+    if yr not in pivot_all_years.columns:
+        pivot_all_years[yr] = 0
+
+def get_year_all(uf, year):
+    row = pivot_all_years[pivot_all_years["UF"] == uf]
     if not row.empty and year in row.columns:
         return int(row.iloc[0][year])
     return 0
 
-ranking_all["2023 (Executado)"] = ranking_all["UF"].map(lambda uf: val_yr(uf, 2023))
-ranking_all["2024 (Executado)"] = ranking_all["UF"].map(lambda uf: val_yr(uf, 2024))
-ranking_all["2025 (Projetado)"] = ranking_all["UF"].map(lambda uf: proj_2025_by_uf.get(uf, 0.0))
+# Projeção 2025 para todas as UFs (precisa de dados históricos por UF; usamos o conjunto completo)
+proj_2025_by_uf_all = {}
+monthly_2025_by_uf_all = {}
+
+# Calcula projeção de 2025 para todas as UFs (pode demorar um pouco)
+for uf in all_ufs:
+    df_u = df[df["UF"] == uf][["ds","y"]].copy()
+    if df_u.empty:
+        proj_2025_by_uf_all[uf] = 0.0
+        monthly_2025_by_uf_all[uf] = pd.DataFrame(columns=['ds','yhat'])
+        continue
+    model = Prophet(holidays=feriados)
+    model.fit(df_u)
+    last_date = df_u["ds"].max()
+    future = model.make_future_dataframe(periods=horizon, freq="MS")
+    forecast = model.predict(future)
+    forecast_future = forecast[forecast["ds"] > last_date]
+    yhat_2025 = forecast_future[forecast_future["ds"].dt.year == 2025]["yhat"].sum()
+    proj_2025_by_uf_all[uf] = float(yhat_2025) if forecast_future is not None else 0.0
+    monthly_2025_by_uf_all[uf] = forecast_future[forecast_future["ds"].dt.year == 2025][["ds","yhat"]]
+
+# Construir ranking
+ranking_all = pd.DataFrame({"UF": all_ufs})
+ranking_all["2023 (Executado)"] = ranking_all["UF"].map(lambda uf: get_year_all(uf, 2023))
+ranking_all["2024 (Executado)"] = ranking_all["UF"].map(lambda uf: get_year_all(uf, 2024))
+ranking_all["2025 (Projetado)"] = ranking_all["UF"].map(lambda uf: proj_2025_by_uf_all.get(uf, 0.0))
 
 ranking_all["Queda 2024/2023 (Real)"] = (ranking_all["2023 (Executado)"] - ranking_all["2024 (Executado)"]).clip(lower=0)
 ranking_all["Queda 2025/2023 (Proj)"] = (ranking_all["2023 (Executado)"] - ranking_all["2025 (Projetado)"]).clip(lower=0)
@@ -208,7 +239,7 @@ ranking_all["Max Queda (Proj)"] = ranking_all[
 
 ranking_all_sorted = ranking_all.sort_values("Max Queda (Proj)", ascending=False)
 
-st.subheader("📊 Ver Ranking de Todas as UF - Projetado (2025)")
+st.subheader("📊 Ver Ranking Geral - Todas as UFs (Projetado 2025)")
 st.dataframe(
     ranking_all_sorted[
         ["UF",
@@ -223,21 +254,21 @@ st.dataframe(
 )
 
 # Detalhe por UF (opcional)
-uf_detail = st.selectbox("Ver detalhes de 2025 projetado para uma UF (opcional):",
-                         ["Nenhum"] + ufs_selected)
-if uf_detail != "Nenhum":
-    monthly_2025 = forecast_2025_by_uf.get(uf_detail)
+uf_detail_all = st.selectbox("Ver detalhes de 2025 projetado para uma UF (opcional):",
+                             ["Nenhum"] + all_ufs)
+if uf_detail_all != "Nenhum":
+    monthly_2025 = monthly_2025_by_uf_all.get(uf_detail_all)
     total_2025 = 0.0
     if monthly_2025 is not None and not monthly_2025.empty:
-        total_2025 = monthly_2025["yhat"].sum()
-        st.subheader(f"Detalhes 2025 projetado - {uf_detail}")
-        fig_detail = px.bar(monthly_2025, x="ds", y="yhat",
+        total_2025 = float(monthly_2025["yhat"].sum())
+        st.subheader(f"Detalhes 2025 projetado - {uf_detail_all}")
+        fig_detail = px.bar(monthly_2025.rename(columns={'yhat':'yhat'}), x="ds", y="yhat",
                             labels={"ds": "Data", "yhat": "Previsão 2025 (mensal)"},
-                            title=f"2025 - {uf_detail} (mensal)")
+                            title=f"2025 - {uf_detail_all} (mensal)")
         st.plotly_chart(fig_detail, use_container_width=True)
     else:
         st.write("Sem dados de 2025 projetado para esta UF.")
-    st.metric(label=f"Total 2025 projetado - {uf_detail}", value=f"{int(total_2025):,}")
+    st.metric(label=f"Total 2025 projetado - {uf_detail_all}", value=f"{int(total_2025):,}")
 
 # ------------------------
 # Projeção Nacional Consolidada (2025) - já exibida acima
