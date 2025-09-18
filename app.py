@@ -1,7 +1,8 @@
 import streamlit as st
 import pandas as pd
-import plotly.express as px
+import plotly.graph_objects as go
 from prophet import Prophet
+import plotly.express as px
 
 # ------------------------
 # Carregar dados
@@ -9,29 +10,20 @@ from prophet import Prophet
 SHEET_CSV = "https://docs.google.com/spreadsheets/d/e/2PACX-1vS7OOWK8wX0B9ulh_Vtmv-R_pbVREiwknncX8oSvnZ4o5wf00gcFhyEEgo3kxW0PmturRda4wL5OCNn/pub?gid=145140176&single=true&output=csv"
 
 def parse_br_number(x):
-    """
-    Interpreta números no formato BR (ponto como separador de milhares,
-    vírgula como separador decimal). Retorna float ou NaN.
-    Exemplos:
-      "40.917" -> 40917.0
-      "1.234,56" -> 1234.56
-      "447,540"  -> 447.540
-    """
+    """ Interpreta números no formato BR (ponto como separador de milhares, vírgula como separador decimal).
+    Retorna float ou NaN. Ex.: "40.917" -> 40917.0, "1.234,56" -> 1234.56, "447,540" -> 447.540 """
     if pd.isna(x):
         return None
     if isinstance(x, (int, float)):
         return float(x)
     s = str(x).strip().replace(" ", "")
     if "." in s and "," in s:
-        # "1.234,56" -> remove milhares, vírgula vira ponto
         s = s.replace(".", "")
         s = s.replace(",", ".")
     else:
         if "." in s:
-            # "40.917" -> 40917
             s = s.replace(".", "")
         if "," in s:
-            # "447,540" -> 447.540
             s = s.replace(",", ".")
     try:
         return float(s)
@@ -77,9 +69,9 @@ def br_float(n, dec=2):
 
 def mes_br_port(dt):
     month_names = {
-        1: "jan", 2: "fev", 3: "mar", 4: "abr",
-        5: "mai", 6: "jun", 7: "jul", 8: "ago",
-        9: "set", 10: "out", 11: "nov", 12: "dez"
+        1: "jan", 2: "fev", 3: "mar", 4: "abr", 5: "mai",
+        6: "jun", 7: "jul", 8: "ago", 9: "set", 10: "out",
+        11: "nov", 12: "dez"
     }
     m = int(dt.month)
     y = dt.year
@@ -107,20 +99,17 @@ df_uf = df[(df["UF"].isin(ufs_selected)) & (df["ds"] >= pd.to_datetime(start_dat
 # Feriados nacionais + férias escolares
 # ------------------------
 feriados_nacionais = pd.DataFrame({
-    'holiday': ['Confraternização', 'Carnaval', 'Paixão de Cristo', 'Tiradentes', 'Dia do Trabalho',
-                'Corpus Christi', 'Independência', 'Nossa Senhora Aparecida', 'Finados', 'Proclamação da República'],
-    'ds': pd.to_datetime(['2023-01-01','2023-02-20','2023-04-07','2023-04-21','2023-05-01',
-                          '2023-06-08','2023-09-07','2023-10-12','2023-11-02','2023-11-15']),
-    'lower_window': 0, 'upper_window': 1
+    'holiday': ['Confraternização', 'Carnaval', 'Paixão de Cristo', 'Tiradentes', 'Dia do Trabalho', 'Corpus Christi', 'Independência', 'Nossa Senhora Aparecida', 'Finados', 'Proclamação da República'],
+    'ds': pd.to_datetime(['2023-01-01','2023-02-20','2023-04-07','2023-04-21','2023-05-01', '2023-06-08','2023-09-07','2023-10-12','2023-11-02','2023-11-15']),
+    'lower_window': 0,
+    'upper_window': 1
 })
-
 ferias_escolares = pd.DataFrame({
     'holiday': ['Férias Escolares', 'Férias Escolares'],
     'ds': pd.to_datetime(['2023-07-01', '2023-12-01']),
     'lower_window': [0, 0],
     'upper_window': [30, 61]
 })
-
 feriados = pd.concat([feriados_nacionais, ferias_escolares])
 
 # ------------------------
@@ -141,16 +130,15 @@ def compute_projection_all(all_uf, horizon, feriados):
         future = model.make_future_dataframe(periods=horizon, freq="MS")
         forecast = model.predict(future)
         forecast_future = forecast[forecast["ds"] > last_date]
-        yhat_2025 = forecast_future[forecast_future["ds"].dt.year == 2025]["yhat"].sum()
-        proj[uf] = float(yhat_2025) if forecast_future is not None else 0.0
-        monthly[uf] = forecast_future[forecast_future["ds"].dt.year == 2025][["ds","yhat"]]
+        yhat_2025 = forecast_future[forecast_future["ds"].dt.year == 2025]["yhat"].sum() if not forecast_future.empty else 0.0
+        proj[uf] = float(yhat_2025)
+        monthly[uf] = forecast_future[forecast_future["ds"].dt.year == 2025][["ds","yhat"]].copy()
     return proj, monthly
 
 # Projeção total por UF (pré-calc) com cache
 all_ufs = sorted(df["UF"].dropna().unique())
 if "proj_2025_by_all" not in st.session_state:
     st.session_state["proj_2025_by_all"], st.session_state["monthly_2025_by_uf_all"] = compute_projection_all(all_ufs, horizon, feriados)
-
 proj_2025_by_all = st.session_state.get("proj_2025_by_all", {})
 monthly_2025_by_uf_all = st.session_state.get("monthly_2025_by_uf_all", {})
 
@@ -159,69 +147,47 @@ monthly_2025_by_uf_all = st.session_state.get("monthly_2025_by_uf_all", {})
 # ------------------------
 st.subheader("Histórico e Projeção por UF (selecionadas)")
 for uf in ufs_selected:
-    df_prophet = df_uf[df_uf["UF"] == uf][["ds","y"]].copy()
+    df_prophet = df[(df["UF"] == uf)][["ds","y"]].copy().sort_values("ds")
     if df_prophet.empty:
         continue
 
-    total_2023_2024 = df[(df["UF"] == uf) & (df["ds"].dt.year.isin([2023,2024]))]["y"].sum()
-    if total_2023_2024 <= 0:
-        continue  # ocultar UF sem dados
-
+    # Construir modelo e previsão
     model = Prophet(holidays=feriados)
-    model.fit(df_prophet)
+    model.fit(df_prophet.rename(columns={"ds":"ds","y":"y"}))
     last_date = df_prophet["ds"].max()
     future = model.make_future_dataframe(periods=horizon, freq="MS")
     forecast = model.predict(future)
     forecast_future = forecast[forecast["ds"] > last_date]
 
-    # Projeção 2025 (somatório yhat de 2025)
-    proj_2025 = forecast_future[forecast_future["ds"].dt.year == 2025]["yhat"].sum()
-    st.session_state.setdefault("proj_2025_by_all", {})
-    st.session_state["proj_2025_by_all"][uf] = float(proj_2025) if forecast_future is not None else 0.0
-    monthly_2025 = forecast_future[forecast_future["ds"].dt.year == 2025][["ds","yhat"]].copy()
-    st.session_state.setdefault("monthly_2025_by_uf_all", {})
-    st.session_state["monthly_2025_by_uf_all"][uf] = monthly_2025
+    # Gráfico único com histórico + projeção (2 traces)
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=df_prophet["ds"], y=df_prophet["y"], mode="lines", name="Histórico"))
+    if not forecast_future.empty:
+        fig.add_trace(go.Scatter(x=forecast_future["ds"], y=forecast_future["yhat"], mode="lines", name="Projeção 2025"))
+        fig.add_trace(go.Scatter(x=forecast_future["ds"], y=forecast_future["yhat_lower"], mode="lines", line=dict(dash="dot", color="gray"), name="Intervalo Inferior 2025"))
+        fig.add_trace(go.Scatter(x=forecast_future["ds"], y=forecast_future["yhat_upper"], mode="lines", line=dict(dash="dot", color="gray"), name="Intervalo Superior 2025"))
+    fig.update_layout(title=f"Histórico + Projeção - {uf}", xaxis_title="Data", yaxis_title="Reservas",
+                      xaxis=dict(rangeselector=dict(buttons=[dict(count=12, label="12m", step="month", stepmode="backward"),
+                                                           dict(step="all")]), type="date"))
+    st.plotly_chart(fig, use_container_width=True)
 
-    # Histórico
-    st.subheader(f"Histórico - {uf}")
-    fig_hist = px.line(df_prophet, x="ds", y="y", title=f"Histórico - {uf}")
-    st.plotly_chart(fig_hist, use_container_width=True)
+    # Tabela de Projeção 2025
+    if not forecast_future.empty:
+        forecast_table = forecast_future[["ds","yhat","yhat_lower","yhat_upper"]].copy()
+        forecast_table["Mês/Ano"] = forecast_table["ds"].dt.strftime("%b/%Y")
+        forecast_table.rename(columns={
+            "yhat": "Previsão 2025",
+            "yhat_lower": "Intervalo Inferior 2025",
+            "yhat_upper": "Intervalo Superior 2025"
+        }, inplace=True)
+        forecast_table["Mês/Ano"] = forecast_table["ds"].apply(lambda d: mes_br_port(d))
+        st.dataframe(forecast_table[["Mês/Ano","Previsão 2025","Intervalo Inferior 2025","Intervalo Superior 2025"]])
 
-    # Projeção
-    st.subheader(f"Projeção - {uf}")
-    fig_forecast = px.line(title=f"Projeção de Reservas - {uf}")
-    fig_forecast.add_scatter(x=df_prophet["ds"], y=df_prophet["y"], mode="lines", name="Histórico")
-    fig_forecast.add_scatter(x=forecast_future["ds"], y=forecast_future["yhat"], mode="lines", name="Previsão 2025")
-    fig_forecast.add_scatter(x=forecast_future["ds"], y=forecast_future["yhat_lower"], mode="lines",
-                             line=dict(dash="dot", color="gray"), name="Intervalo Inferior 2025")
-    fig_forecast.add_scatter(x=forecast_future["ds"], y=forecast_future["yhat_upper"], mode="lines",
-                             line=dict(dash="dot", color="gray"), name="Intervalo Superior 2025")
-    st.plotly_chart(fig_forecast, use_container_width=True)
-
-    # Tabela de Projeção
-    st.subheader(f"Tabela de Projeção - {uf}")
-    forecast_table = forecast_future[["ds","yhat","yhat_lower","yhat_upper"]].copy()
-    forecast_table["Mês/Ano"] = forecast_table["ds"].dt.strftime("%b/%Y")
-    # BR: renomear colunas
-    forecast_table.rename(columns={
-        "yhat": "Previsão 2025",
-        "yhat_lower": "Intervalo Inferior 2025",
-        "yhat_upper": "Intervalo Superior 2025"
-    }, inplace=True)
-
-    # Converter Mês/Ano para BR (jan/2025 etc.)
-    forecast_table["Mês/Ano"] = forecast_table["ds"].apply(lambda d: mes_br_port(d))
-    st.dataframe(forecast_table[["Mês/Ano","Previsão 2025","Intervalo Inferior 2025","Intervalo Superior 2025"]])
-
-# ------------------------
-# Resumo por UF (opcional)
-# ------------------------
-uf_detail = st.sidebar.selectbox("Ver detalhes de uma UF (opcional):", ["Nenhum"] + all_ufs)
-if uf_detail != "Nenhum":
-    total_2023_uf = int(df[(df["UF"] == uf_detail) & (df["ds"].dt.year == 2023)]['y'].sum())
-    total_2024_uf = int(df[(df["UF"] == uf_detail) & (df["ds"].dt.year == 2024)]['y'].sum())
-    proj_uf_2025 = int(proj_2025_by_all.get(uf_detail, 0.0))
-    st.markdown(f"Resumo da UF {uf_detail}:")
+    # Resumo da UF (opcional)
+    total_2023_uf = int(df[(df["UF"] == uf) & (df["ds"].dt.year == 2023)]['y'].sum())
+    total_2024_uf = int(df[(df["UF"] == uf) & (df["ds"].dt.year == 2024)]['y'].sum())
+    proj_uf_2025 = int(proj_2025_by_all.get(uf, 0.0))
+    st.markdown(f"Resumo da UF {uf}:")
     colA, colB, colC = st.columns(3)
     with colA:
         st.metric(label="2023 (Executado)", value=br_int(total_2023_uf))
@@ -240,12 +206,4 @@ A projeção é feita usando o modelo Facebook Prophet, que considera:
 - Sazonalidade (padrões anuais, mensais e semanais)
 - Feriados e férias escolares
 - Intervalo de confiança (faixa de incerteza na previsão)
-""")
-
-# Observação / extras (opcional)
-st.markdown("""
-Sugestões adicionais:
-- Exportar tabelas para CSV/Excel
-- Verificar sazonalidade mensal por UF com heatmap
-- Ajustar o modelo com dados adicionais para melhor calibração
 """)
