@@ -104,18 +104,18 @@ feriados = pd.concat([feriados_nacionais, ferias_escolares])
 # Projeção por UF (2025) + Gráficos
 # ------------------------
 # Armazenamento para evitar re-cálculo desnecessário
-if "proj_2025_by_uf" not in st.session_state:
-    st.session_state.proj_2025_by_uf = {}
+if "proj_2025_by_all" not in st.session_state:
+    st.session_state["proj_2025_by_all"] = {}
 
-# Botão para rodar a projeção 2025 para todas as UFs (opcional)
-rodar_projecao = st.button("Rodar projeção 2025 para todas as UFs")
+all_ufs = sorted(df["UF"].dropna().unique())
 
+rodar_projecao = st.button("Rodar projeção 2025 para todas as UFs (opcional)")
 if rodar_projecao:
-    st.session_state.proj_2025_by_uf = {}
-    for uf in ufs:
+    proj_dict = {}
+    for uf in all_ufs:
         df_u = df[(df["UF"] == uf)][["ds","y"]].copy()
         if df_u.empty:
-            st.session_state.proj_2025_by_uf[uf] = 0.0
+            proj_dict[uf] = 0.0
             continue
         model = Prophet(holidays=feriados)
         model.fit(df_u)
@@ -124,11 +124,12 @@ if rodar_projecao:
         forecast = model.predict(future)
         forecast_future = forecast[forecast["ds"] > last_date]
         yhat_2025 = forecast_future[forecast_future["ds"].dt.year == 2025]["yhat"].sum()
-        st.session_state.proj_2025_by_uf[uf] = float(yhat_2025) if forecast_future is not None else 0.0
+        proj_dict[uf] = float(yhat_2025) if forecast_future is not None else 0.0
+    st.session_state["proj_2025_by_all"] = proj_dict
     st.success("Projeção 2025 para todas as UFs concluída.")
 
-# Projeção por UF (aplica também se o usuário não apertou o botão, lendo do cache)
-proj_2025_by_uf = st.session_state.get("proj_2025_by_uf", {})
+# Projeção por UF (aplica também se o usuário não apertou o botão)
+proj_2025_by_all = st.session_state.get("proj_2025_by_all", {})
 
 st.subheader("🔮 Tendência / Projeção por UF (com Projeção 2025)")
 for uf in ufs_selected:
@@ -145,11 +146,12 @@ for uf in ufs_selected:
 
     # Projeção 2025 (somatório yhat de 2025)
     proj_2025 = forecast_future[forecast_future["ds"].dt.year == 2025]["yhat"].sum()
-    # Armazena localmente na interface (pode usar para o ranking geral mais abaixo)
-    st.session_state.proj_2025_by_uf[uf] = float(proj_2025) if forecast_future is not None else 0.0
+    # Armazena para uso no ranking geral
+    st.session_state["proj_2025_by_all"][uf] = float(proj_2025) if forecast_future is not None else 0.0
 
     # Detalhes 2025 (mensal)
     monthly_2025 = forecast_future[forecast_future["ds"].dt.year == 2025][["ds","yhat"]].copy()
+
     # Histórico
     st.subheader(f"📈 Histórico - {uf}")
     fig_hist = px.line(df_prophet, x="ds", y="y", title=f"Histórico - {uf}")
@@ -171,7 +173,7 @@ for uf in ufs_selected:
     forecast_table = forecast_future[["ds","yhat","yhat_lower","yhat_upper"]].copy()
     forecast_table["Mês/Ano"] = forecast_table["ds"].dt.strftime("%b/%Y")
 
-    st.metric(label=f"Projeção 2025 (UF {uf})", value=br_float(proj_2025_by_uf.get(uf, 0.0), dec=0))
+    st.metric(label=f"Projeção 2025 (UF {uf})", value=br_float(proj_2025, dec=0))
 
     # Renomear colunas para BR
     forecast_table.rename(columns={
@@ -185,8 +187,7 @@ for uf in ufs_selected:
 # ------------------------
 # Ranking Geral - Todas as UFs (Projetado 2025)
 # ------------------------
-# Dados de 2023/2024 por UF (executados) para todas as UFs
-all_ufs = sorted(df["UF"].dropna().unique())
+todas_ufs = sorted(df["UF"].dropna().unique())
 
 # Pivot de anos completos (para 2023/2024)
 df_all_years = df.copy()
@@ -206,27 +207,21 @@ def get_year_all(uf, year):
 proj_2025_by_uf_all = {}
 monthly_2025_by_uf_all = {}
 
-for uf in all_ufs:
-    df_u = df[df["UF"] == uf][["ds","y"]].copy()
-    if df_u.empty:
+# Se já tiver projeção de todas as UFs, usa; senão calcula sob demanda
+for uf in todas_ufs:
+    if uf in st.session_state.get("proj_2025_by_all", {}):
+        proj_2025_by_uf_all[uf] = float(st.session_state["proj_2025_by_all"][uf])
+        monthly_2025_by_uf_all[uf] = None
+    else:
+        # inicializa com 0 (vai ser preenchido quando rodar a projeção)
         proj_2025_by_uf_all[uf] = 0.0
-        monthly_2025_by_uf_all[uf] = pd.DataFrame(columns=['ds','yhat'])
-        continue
-    model = Prophet(holidays=feriados)
-    model.fit(df_u)
-    last_date = df_u["ds"].max()
-    future = model.make_future_dataframe(periods=horizon, freq="MS")
-    forecast = model.predict(future)
-    forecast_future = forecast[forecast["ds"] > last_date]
-    yhat_2025 = forecast_future[forecast_future["ds"].dt.year == 2025]["yhat"].sum()
-    proj_2025_by_uf_all[uf] = float(yhat_2025) if forecast_future is not None else 0.0
-    monthly_2025_by_uf_all[uf] = forecast_future[forecast_future["ds"].dt.year == 2025][["ds","yhat"]]
+        monthly_2025_by_uf_all[uf] = None
 
 # Construir ranking agregado
-ranking_all = pd.DataFrame({"UF": all_ufs})
+ranking_all = pd.DataFrame({"UF": todas_ufs})
 ranking_all["2023 (Executado)"] = ranking_all["UF"].map(lambda uf: get_year_all(uf, 2023))
 ranking_all["2024 (Executado)"] = ranking_all["UF"].map(lambda uf: get_year_all(uf, 2024))
-ranking_all["2025 (Projetado)"] = ranking_all["UF"].map(lambda uf: proj_2025_by_uf_all.get(uf, 0.0))
+ranking_all["2025 (Projetado)"] = ranking_all["UF"].map(lambda uf: proj_2025_by_all.get(uf, 0.0) if uf in proj_2025_by_all else 0.0)
 
 ranking_all["Queda 2024/2023 (Real)"] = (ranking_all["2023 (Executado)"] - ranking_all["2024 (Executado)"]).clip(lower=0)
 ranking_all["Queda 2025/2023 (Proj)"] = (ranking_all["2023 (Executado)"] - ranking_all["2025 (Projetado)"]).clip(lower=0)
@@ -239,17 +234,16 @@ ranking_all["Máxima Queda (Proj)"] = ranking_all[
 ranking_all_sorted = ranking_all.sort_values("Máxima Queda (Proj)", ascending=False)
 
 st.subheader("📊 Ver Ranking Geral - Todas as UFs (Projetado 2025)")
-# Formatar para BR (inteiros nas 2023/2024, 2025 sem casas)
-def to_br_int(val):
-    try:
-        return br_int(int(val))
-    except:
-        return br_int(val)
+# Formatando para BR na exibição
+def br_int_or_dash(v):
+    if pd.isna(v):
+        return "-"
+    return br_int(int(v))
 
 display_all = ranking_all_sorted.copy()
-display_all["2023 (Executado)"] = display_all["2023 (Executado)"].apply(to_br_int)
-display_all["2024 (Executado)"] = display_all["2024 (Executado)"].apply(to_br_int)
-display_all["2025 (Projetado)"] = display_all["2025 (Projetado)"].apply(lambda v: br_int(int(v)) if v is not None else "-")
+display_all["2023 (Executado)"] = display_all["2023 (Executado)"].apply(br_int)
+display_all["2024 (Executado)"] = display_all["2024 (Executado)"].apply(br_int)
+display_all["2025 (Projetado)"] = display_all["2025 (Projetado)"].apply(lambda v: br_int(int(v)) if not pd.isna(v) else "-")
 display_all["Queda 2024/2023 (Real)"] = display_all["Queda 2024/2023 (Real)"].apply(br_int)
 display_all["Queda 2025/2023 (Proj)"] = display_all["Queda 2025/2023 (Proj)"].apply(br_int)
 display_all["Queda 2025/2024 (Proj)"] = display_all["Queda 2025/2024 (Proj)"].apply(br_int)
@@ -270,7 +264,7 @@ st.dataframe(
 
 # Detalhe por UF (opcional)
 uf_detail_all = st.selectbox("Ver detalhes de 2025 projetado para uma UF (opcional):",
-                             ["Nenhum"] + all_ufs)
+                             ["Nenhum"] + todas_ufs)
 if uf_detail_all != "Nenhum":
     monthly_2025 = monthly_2025_by_uf_all.get(uf_detail_all)
     total_2025 = 0.0
@@ -284,7 +278,7 @@ if uf_detail_all != "Nenhum":
         st.plotly_chart(fig_detail, use_container_width=True)
     else:
         st.write("Sem dados de 2025 projetado para esta UF.")
-    st.metric(label=f"Total 2025 projetado - {uf_detail_all}", value=f"{br_int(total_2025)}")
+    st.metric(label=f"Total 2025 projetado - {uf_detail_all}", value=br_int(int(total_2025)))
 
 # ------------------------
 # ℹ️ Como é calculada a tendência
@@ -298,4 +292,12 @@ A projeção é feita usando o modelo Facebook Prophet, que considera:
 - Intervalo de confiança (faixa de incerteza na previsão)
 
 Os rankings mostram onde a queda absoluta é maior em cada UF, incluindo dados executados (2023/2024) e a projeção para 2025.
+""")
+
+# Observação / extras (opcional)
+st.markdown("""
+Sugestões adicionais:
+- Esconder projeções de UFs sem dados suficientes para manter a tela mais limpa
+- Exibir o ranking em formato compacto (uma linha por UF) se preferir
+- Expor opções de exportar as tabelas para CSV/Excel
 """)
