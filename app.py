@@ -104,6 +104,7 @@ st.dataframe(ranking_real_sorted[["UF","Max Queda (Real)","Queda 2024/2023 (Real
 # Projeção por UF (2025) + Gráficos
 # ------------------------
 proj_2025_by_uf = {}
+forecast_2025_by_uf = {}  # para detalhar 2025 projetado por UF (mensal)
 
 st.subheader("🔮 Tendência / Projeção por UF (com Projeção 2025)")
 for uf in ufs_selected:
@@ -121,6 +122,10 @@ for uf in ufs_selected:
     # Soma da projeção para 2025 (yhat)
     proj_2025 = forecast_future[forecast_future["ds"].dt.year == 2025]["yhat"].sum()
     proj_2025_by_uf[uf] = proj_2025
+
+    # Guarda detalhamento mensal de 2025 para o UF
+    monthly_2025 = forecast_future[forecast_future["ds"].dt.year == 2025][["ds","yhat"]].copy()
+    forecast_2025_by_uf[uf] = monthly_2025
 
     # Gráfico Histórico
     st.subheader(f"📈 Histórico - {uf}")
@@ -177,14 +182,66 @@ st.subheader("📉 Ranking de Maiores Quedas por UF (Projeção 2025)")
 st.dataframe(ranking_proj_sorted[["UF","Max Queda (Proj)","Queda 2024/2023 (Real)","Queda 2025/2023 (Proj)","Queda 2025/2024 (Proj)"]])
 
 # ------------------------
-# Projeção Nacional Consolidada
+# Ranking de Todas as UF - Projetado (Resumo)
 # ------------------------
-# Projeção 2025 nacional: soma das projeções por UF
-proj_nacional_2025 = sum(proj_2025_by_uf.values()) if proj_2025_by_uf else 0
+# Constrói um ranking consolidado para todas as UF com dados reais de 2023/2024 e projeção 2025
+ranking_all = pd.DataFrame({"UF": ufs_selected})
 
-st.subheader("🌎 Projeção Nacional Consolidada (2025)")
-st.metric(label="Reservas projetadas em 2025 (nacional)", value=f"{int(proj_nacional_2025):,}")
+# 2023 e 2024 executados (reutilizando pivot_years)
+def val_yr(uf, year):
+    row = pivot_years[pivot_years["UF"] == uf]
+    if not row.empty and year in row.columns:
+        return int(row.iloc[0][year])
+    return 0
 
+ranking_all["2023 (Executado)"] = ranking_all["UF"].map(lambda uf: val_yr(uf, 2023))
+ranking_all["2024 (Executado)"] = ranking_all["UF"].map(lambda uf: val_yr(uf, 2024))
+ranking_all["2025 (Projetado)"] = ranking_all["UF"].map(lambda uf: proj_2025_by_uf.get(uf, 0.0))
+
+ranking_all["Queda 2024/2023 (Real)"] = (ranking_all["2023 (Executado)"] - ranking_all["2024 (Executado)"]).clip(lower=0)
+ranking_all["Queda 2025/2023 (Proj)"] = (ranking_all["2023 (Executado)"] - ranking_all["2025 (Projetado)"]).clip(lower=0)
+ranking_all["Queda 2025/2024 (Proj)"] = (ranking_all["2024 (Executado)"] - ranking_all["2025 (Projetado)"]).clip(lower=0)
+
+ranking_all["Max Queda (Proj)"] = ranking_all[
+    ["Queda 2024/2023 (Real)", "Queda 2025/2023 (Proj)", "Queda 2025/2024 (Proj)"]
+].max(axis=1)
+
+ranking_all_sorted = ranking_all.sort_values("Max Queda (Proj)", ascending=False)
+
+st.subheader("📊 Ver Ranking de Todas as UF - Projetado (2025)")
+st.dataframe(
+    ranking_all_sorted[
+        ["UF",
+         "2023 (Executado)",
+         "2024 (Executado)",
+         "2025 (Projetado)",
+         "Queda 2024/2023 (Real)",
+         "Queda 2025/2023 (Proj)",
+         "Queda 2025/2024 (Proj)",
+         "Max Queda (Proj)"]
+    ]
+)
+
+# Detalhe por UF (opcional)
+uf_detail = st.selectbox("Ver detalhes de 2025 projetado para uma UF (opcional):",
+                         ["Nenhum"] + ufs_selected)
+if uf_detail != "Nenhum":
+    monthly_2025 = forecast_2025_by_uf.get(uf_detail)
+    total_2025 = 0.0
+    if monthly_2025 is not None and not monthly_2025.empty:
+        total_2025 = monthly_2025["yhat"].sum()
+        st.subheader(f"Detalhes 2025 projetado - {uf_detail}")
+        fig_detail = px.bar(monthly_2025, x="ds", y="yhat",
+                            labels={"ds": "Data", "yhat": "Previsão 2025 (mensal)"},
+                            title=f"2025 - {uf_detail} (mensal)")
+        st.plotly_chart(fig_detail, use_container_width=True)
+    else:
+        st.write("Sem dados de 2025 projetado para esta UF.")
+    st.metric(label=f"Total 2025 projetado - {uf_detail}", value=f"{int(total_2025):,}")
+
+# ------------------------
+# Projeção Nacional Consolidada (2025) - já exibida acima
+# ------------------------
 # Observação
 st.markdown("""
 ### ℹ️ Como é calculada a tendência
@@ -193,12 +250,6 @@ A projeção é feita usando o modelo **Facebook Prophet**, que considera:
 - Sazonalidade
 - Feriados e férias escolares
 - Intervalo de confiança
-Os rankings mostram onde a queda absoluta é maior em cada UF, tanto com base nos dados reais até 2024 quanto com a projeção para 2025.
-""")
 
-# Explicação adicional (opcional)
-st.markdown("""
-Se preferir, posso adaptar para:
-- apresentar apenas uma tabela consolidada com as três quedas por UF (sem separação Real/Proj)
-- exibir as projeções com gráficos adicionais ou versões compactas
+Os rankings mostram onde a queda absoluta é maior em cada UF, tanto com base nos dados reais até 2024 quanto com a projeção para 2025.
 """)
