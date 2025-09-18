@@ -4,7 +4,7 @@ import plotly.express as px
 from prophet import Prophet
 
 # ------------------------
-# Carregar dados do Google Sheets
+# Carregar dados
 # ------------------------
 SHEET_CSV = "https://docs.google.com/spreadsheets/d/e/2PACX-1vS7OOWK8wX0B9ulh_Vtmv-R_pbVREiwknncX8oSvnZ4o5wf00gcFhyEEgo3kxW0PmturRda4wL5OCNn/pub?gid=145140176&single=true&output=csv"
 
@@ -45,15 +45,15 @@ feriados_nacionais = pd.DataFrame({
 
 ferias_escolares = pd.DataFrame({
     'holiday': ['Férias Escolares', 'Férias Escolares'],
-    'ds': pd.to_datetime(['2023-07-01', '2023-12-15']),
+    'ds': pd.to_datetime(['2023-07-01', '2023-12-01']),
     'lower_window': [0, 0],
-    'upper_window': [30, 47]  # Julho: 31 dias, Dez/Jan: 48 dias
+    'upper_window': [30, 61]  # Julho: 31 dias, Dez/Jan: 62 dias
 })
 
 feriados = pd.concat([feriados_nacionais, ferias_escolares])
 
 # ------------------------
-# Loop por UF para gerar gráficos e projeção
+# Loop por UF para gráficos e projeção
 # ------------------------
 st.subheader("🔮 Tendência / Projeção por UF")
 for uf in ufs_selected:
@@ -73,7 +73,7 @@ for uf in ufs_selected:
     fig_hist = px.line(df_prophet, x="ds", y="y", title=f"Histórico - {uf}")
     st.plotly_chart(fig_hist, use_container_width=True)
 
-    # Gráfico de Tendência
+    # Gráfico de Projeção
     st.subheader(f"📊 Projeção - {uf}")
     fig_forecast = px.line(title=f"Projeção de Reservas - {uf}")
     fig_forecast.add_scatter(x=df_prophet["ds"], y=df_prophet["y"], mode="lines+markers", name="Histórico")
@@ -111,20 +111,39 @@ for uf in ufs_selected:
 st.subheader("📉 Ranking de Maiores Quedas por UF")
 df_ranking = df.copy()
 df_ranking["Ano"] = df_ranking["ds"].dt.year
+
 ranking = df_ranking.pivot_table(index="UF", columns="Ano", values="y", aggfunc="sum").reset_index()
 
 # Comparação dinâmica
-base_ano = 2023
-for ano in ranking.columns[1:]:
-    if ano != "UF":
-        if int(ano) > 2025:
-            ranking[f"Perda Absoluta {ano}"] = ranking[2025] - ranking[ano]
-        else:
-            ranking[f"Perda Absoluta {ano}"] = ranking[base_ano] - ranking[ano]
+cols_perda = []
+for ano in ranking.columns[1:]:  # Ignora UF
+    if int(ano) > 2025:
+        ranking[f"Perda Absoluta {ano}"] = ranking[2025] - ranking[ano]
+    else:
+        ranking[f"Perda Absoluta {ano}"] = ranking[2023] - ranking[ano]
+    cols_perda.append(f"Perda Absoluta {ano}")
 
-ranking["Max Perda Absoluta"] = ranking[[col for col in ranking.columns if "Perda Absoluta" in col]].max(axis=1)
+ranking[cols_perda] = ranking[cols_perda].apply(pd.to_numeric, errors='coerce').fillna(0)
+ranking["Max Perda Absoluta"] = ranking[cols_perda].max(axis=1)
 ranking_sorted = ranking.sort_values("Max Perda Absoluta", ascending=False)
-st.dataframe(ranking_sorted[["UF","Max Perda Absoluta"] + [col for col in ranking_sorted.columns if "Perda Absoluta" in col]])
+st.dataframe(ranking_sorted[["UF","Max Perda Absoluta"] + cols_perda])
+
+# ------------------------
+# Tabela Nacional Consolidada
+# ------------------------
+st.subheader("🌎 Projeção Nacional Consolidada")
+df_total = df.copy()
+df_total_grouped = df_total.groupby("ds")["y"].sum().reset_index()
+
+model_total = Prophet(holidays=feriados)
+model_total.fit(df_total_grouped)
+future_total = model_total.make_future_dataframe(periods=horizon, freq="MS")
+forecast_total = model_total.predict(future_total)
+forecast_total_future = forecast_total[forecast_total["ds"] > df_total_grouped["ds"].max()]
+
+forecast_total_future["Mês/Ano"] = forecast_total_future["ds"].dt.strftime("%b/%Y")
+forecast_total_future.rename(columns={"yhat":"Previsão","yhat_lower":"Intervalo Inferior","yhat_upper":"Intervalo Superior"}, inplace=True)
+st.dataframe(forecast_total_future[["Mês/Ano","Previsão","Intervalo Inferior","Intervalo Superior"]])
 
 # ------------------------
 # Explicativo
