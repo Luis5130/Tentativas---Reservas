@@ -63,7 +63,7 @@ def br_int(n):
     s = f"{i:,}"
     return s.replace(",", ".")
 
-def br_float(n, dec=2):
+def br_float(n, dec=0):
     if pd.isna(n):
         return "-"
     s = f"{float(n):,.{dec}f}"
@@ -73,9 +73,12 @@ def br_float(n, dec=2):
 st.title("📊 Tendência de Reservas + Projeção")
 
 # ------------------------
-# Sidebar
+# Dados e projeção (sem botão)
 # ------------------------
+# UFs disponíveis
 ufs = sorted(df["UF"].dropna().unique())
+
+# Seleção de UFs pelo usuário
 ufs_selected = st.sidebar.multiselect("Selecione os estados (UF)", ufs, default=ufs[:1])
 
 start_date = st.sidebar.date_input("Data inicial", df["ds"].min())
@@ -106,26 +109,16 @@ ferias_escolares = pd.DataFrame({
 feriados = pd.concat([feriados_nacionais, ferias_escolares])
 
 # ------------------------
-# Projeção por UF (2025) + Gráficos
+# Função para calcular projeções 2025 por UF (sem botão)
 # ------------------------
-# Armazenamento para evitar re-cálculo desnecessário
-if "proj_2025_by_all" not in st.session_state:
-    st.session_state["proj_2025_by_all"] = {}
-
-if "monthly_2025_by_uf_all" not in st.session_state:
-    st.session_state["monthly_2025_by_uf_all"] = {}
-
-# Botão para rodar a projeção 2025 para todas as UFs
-rodar_projecao = st.button("Rodar projeção 2025 para todas as UFs (opcional)")
-
-if rodar_projecao:
-    proj_all = {}
-    monthly_all = {}
-    for uf in sorted(df["UF"].dropna().unique()):
+def compute_projection_all(all_uf, horizon, feriados):
+    proj = {}
+    monthly = {}
+    for uf in all_uf:
         df_u = df[(df["UF"] == uf)][["ds","y"]].copy()
         if df_u.empty:
-            proj_all[uf] = 0.0
-            monthly_all[uf] = pd.DataFrame(columns=['ds','yhat'])
+            proj[uf] = 0.0
+            monthly[uf] = pd.DataFrame(columns=['ds','yhat'])
             continue
         model = Prophet(holidays=feriados)
         model.fit(df_u)
@@ -134,30 +127,27 @@ if rodar_projecao:
         forecast = model.predict(future)
         forecast_future = forecast[forecast["ds"] > last_date]
         yhat_2025 = forecast_future[forecast_future["ds"].dt.year == 2025]["yhat"].sum()
-        proj_all[uf] = float(yhat_2025) if forecast_future is not None else 0.0
-        monthly_all[uf] = forecast_future[forecast_future["ds"].dt.year == 2025][["ds","yhat"]]
-    st.session_state["proj_2025_by_all"] = proj_all
-    st.session_state["monthly_2025_by_uf_all"] = monthly_all
-    st.success("Projeção 2025 para todas as UFs concluída.")
+        proj[uf] = float(yhat_2025) if forecast_future is not None else 0.0
+        monthly[uf] = forecast_future[forecast_future["ds"].dt.year == 2025][["ds","yhat"]]
+    return proj, monthly
 
-# Validação de projeção atual
-proj_2025_by_all = st.session_state.get("proj_2025_by_all", {})
-monthly_2025_by_uf_all = st.session_state.get("monthly_2025_by_uf_all", {})
+# Prepara projeção para todas as UFs (executa na inicialização)
+all_ufs = sorted(df["UF"].dropna().unique())
+proj_2025_by_all, monthly_2025_by_uf_all = compute_projection_all(all_ufs, horizon, feriados)
 
 # ------------------------
 # Histórico e Projeção por UF (com dados BR)
 # ------------------------
-st.subheader("🔮 Tendência / Projeção por UF (com Projeção 2025)")
+st.subheader("🔮 Histórico e Projeção por UF")
 for uf in ufs_selected:
     df_prophet = df_uf[df_uf["UF"] == uf][["ds","y"]].copy()
     if df_prophet.empty:
         continue
 
-    # Checa se há dados relevantes para a UF
     total_2023_2024 = df[(df["UF"] == uf) & (df["ds"].dt.year.isin([2023,2024]))]["y"].sum()
-    se_tem_dados = total_2023_2024 is not None and total_2023_2024 > 0
+    has_data = (total_2023_2024 is not None) and (total_2023_2024 > 0)
 
-    if not se_tem_dados:
+    if not has_data:
         # Esconder UFs sem dados suficientes
         continue
 
@@ -170,7 +160,7 @@ for uf in ufs_selected:
 
     # Projeção 2025 (somatório yhat de 2025)
     proj_2025 = forecast_future[forecast_future["ds"].dt.year == 2025]["yhat"].sum()
-    # Armazenar para ranking geral (se usado no futuro)
+    # Guarda na sessão (para uso rápido se precisar)
     st.session_state.setdefault("proj_2025_by_all", {})
     st.session_state["proj_2025_by_all"][uf] = float(proj_2025) if forecast_future is not None else 0.0
 
@@ -200,12 +190,63 @@ for uf in ufs_selected:
     forecast_table = forecast_future[["ds","yhat","yhat_lower","yhat_upper"]].copy()
     forecast_table["Mês/Ano"] = forecast_table["ds"].dt.strftime("%b/%Y")
 
-    # Não exibir o valor bruto da projeção como título separado
     st.dataframe(forecast_table[["Mês/Ano","yhat","yhat_lower","yhat_upper"]].rename(columns={
         "yhat": "Previsão 2025",
         "yhat_lower": "Intervalo Inferior 2025",
         "yhat_upper": "Intervalo Superior 2025"
     }))
+
+# ------------------------
+# Cards de resumo executivo
+# ------------------------
+# Totais globais
+total_2023_global = int(df[df["ds"].dt.year == 2023]["y"].sum())
+total_2024_global = int(df[df["ds"].dt.year == 2024]["y"].sum())
+proj_total_2025 = int(sum([v for v in proj_2025_by_all.values()])) if proj_2025_by_all else 0
+
+# Maior queda (Proj) entre as UFs (2025 vs 2023/2024)
+queda_2025_2023 = {}
+queda_2025_2024 = {}
+for uf in all_ufs:
+    y2023 = int(soma_por_ano := df[(df["UF"] == uf) & (df["ds"].dt.year == 2023)]['y'].sum()) if not df[(df["UF"] == uf) & (df["ds"].dt.year == 2023)].empty else 0
+    y2024 = int(df[(df["UF"] == uf) & (df["ds"].dt.year == 2024)]['y'].sum()) if not df[(df["UF"] == uf) & (df["ds"].dt.year == 2024)].empty else 0
+    proj_u = proj_2025_by_all.get(uf, 0.0)
+    queda_2025_2023[uf] = max(0, y2023 - int(proj_u))
+    queda_2025_2024[uf] = max(0, y2024 - int(proj_u))
+
+uf_maior_queda = max(queda_2025_2023, key=queda_2025_2023.get) if quedan := queda_2025_2023 else None
+maior_queda_2025_2023 = queda_2025_2023.get(uf_maior_queda, 0) if uf_maior_queda else 0
+# Impacto relativo (em relação ao total de 2023)
+percent_impacto = 0.0
+if uf_maior_queda:
+    total_2023_uf = int(df[(df["UF"] == uf_maior_queda) & (df["ds"].dt.year == 2023)]['y'].sum())
+    if total_2023_uf > 0:
+        percent_impacto = (maior_queda_2025_2023 / total_2023_uf) * 100
+
+# Layout em cards (4 colunas)
+col1, col2, col3, col4 = st.columns(4)
+
+with col1:
+    st.metric(label="Total 2023 (Executado)", value=br_int(total_2023_global))
+with col2:
+    st.metric(label="Total 2024 (Executado)", value=br_int(total_2024_global))
+with col3:
+    st.metric(label="Projeção Total 2025", value=br_int(proj_total_2025))
+
+with col4:
+    uf_label = uf_maior_queda if uf_maior_queda else "-"
+    st.metric(label=f"Maior Queda 2025/2023 (Proj) - UF {uf_label}", value=br_int(maior_queda_2025_2023))
+
+# Linha extra com impacto relativo (opcional)
+st.markdown(f"Impacto relativo da maior queda em 2025/2023: {percent_impacto:.2f}%")
+
+# Observação
+st.markdown("""
+Notas:
+- Os números são formatados em BR (1.000,00 etc.). 
+- UFs sem dados suficientes são ocultadas das projeções para evitar números enganosos.
+- A projeção 2025 é calculada por UF com o modelo Prophet, levando em conta feriados e férias escolares.
+""")
 
 # ------------------------
 # ℹ️ Como é calculada a tendência
@@ -216,5 +257,13 @@ A projeção é feita usando o modelo Facebook Prophet, que considera:
 - Tendência de longo prazo
 - Sazonalidade (padrões anuais, mensais e semanais)
 - Feriados e férias escolares
-- Intervalo de confiança
+- Intervalo de confiança (faixa de incerteza na previsão)
+""")
+
+# Observação / extras (opcional)
+st.markdown("""
+Sugestões adicionais:
+- Exportar tabelas para CSV/Excel
+- Verificar sazonalidade mensal por UF com heatmap
+- Ajustar o modelo com dados adicionais (ex.: 2018-2022) para melhor calibração
 """)
