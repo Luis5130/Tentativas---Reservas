@@ -2,45 +2,24 @@ import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
 from prophet import Prophet
-import plotly.express as px
 
 # ------------------------
 # Carregar dados
 # ------------------------
 SHEET_CSV = "https://docs.google.com/spreadsheets/d/e/2PACX-1vS7OOWK8wX0B9ulh_Vtmv-R_pbVREiwknncX8oSvnZ4o5wf00gcFhyEEgo3kxW0PmturRda4wL5OCNn/pub?gid=145140176&single=true&output=csv"
 
-def parse_br_number(x):
-    """ Interpreta números no formato BR (ponto como separador de milhares, vírgula como separador decimal).
-    Retorna float ou NaN. Ex.: "40.917" -> 40917.0, "1.234,56" -> 1234.56, "447,540" -> 447.540 """
-    if pd.isna(x):
-        return None
-    if isinstance(x, (int, float)):
-        return float(x)
-    s = str(x).strip().replace(" ", "")
-    if "." in s and "," in s:
-        s = s.replace(".", "")
-        s = s.replace(",", ".")
-    else:
-        if "." in s:
-            s = s.replace(".", "")
-        if "," in s:
-            s = s.replace(",", ".")
-    try:
-        return float(s)
-    except:
-        return None
-
 @st.cache_data(ttl=300)
 def load_data(url):
     df = pd.read_csv(url)
+    # Espera: colunas xUF, ds (data), y (inteiro)
     if "Mês/Ano" in df.columns and "Tentativa de Reserva" in df.columns:
         df = df.rename(columns={"Mês/Ano": "ds", "Tentativa de Reserva": "y"})
-    # Aplicar parsing BR
-    if "y" in df.columns:
-        df["y"] = df["y"].apply(parse_br_number)
-        df["y"] = pd.to_numeric(df["y"], errors="coerce")
+    # ds -> datetime
     if "ds" in df.columns:
         df["ds"] = pd.to_datetime(df["ds"], errors="coerce")
+    # y -> numeric inteiro (sem parsing BR)
+    if "y" in df.columns:
+        df["y"] = pd.to_numeric(df["y"], errors="coerce").astype('Int64')
     return df
 
 df = load_data(SHEET_CSV)
@@ -51,36 +30,9 @@ if "UF" not in df.columns:
     st.stop()
 
 # ------------------------
-# Funções de formatação BR
-# ------------------------
-def br_int(n):
-    if pd.isna(n):
-        return "-"
-    i = int(n)
-    s = f"{i:,}"
-    return s.replace(",", ".")
-
-def br_float(n, dec=2):
-    if pd.isna(n):
-        return "-"
-    s = f"{float(n):,.{dec}f}"
-    s = s.replace(",", "X").replace(".", ",").replace("X", ".")
-    return s
-
-def mes_br_port(dt):
-    month_names = {
-        1: "jan", 2: "fev", 3: "mar", 4: "abr", 5: "mai",
-        6: "jun", 7: "jul", 8: "ago", 9: "set", 10: "out",
-        11: "nov", 12: "dez"
-    }
-    m = int(dt.month)
-    y = dt.year
-    return f"{month_names[m].capitalize()}/{y}"
-
-# ------------------------
 # Título
 # ------------------------
-st.title("Tentativa de Reservas + Tendência")
+st.title("Tentativa de Reservas + Tendência (sem parsing BR)")
 
 # ------------------------
 # Sidebar: UF + Período
@@ -97,10 +49,11 @@ df_uf = df[(df["UF"].isin(ufs_selected)) & (df["ds"] >= pd.to_datetime(start_dat
 
 # ------------------------
 # Feriados nacionais + férias escolares
+# (Mantém apenas se quiser; pode comentar)
 # ------------------------
 feriados_nacionais = pd.DataFrame({
     'holiday': ['Confraternização', 'Carnaval', 'Paixão de Cristo', 'Tiradentes', 'Dia do Trabalho', 'Corpus Christi', 'Independência', 'Nossa Senhora Aparecida', 'Finados', 'Proclamação da República'],
-    'ds': pd.to_datetime(['2023-01-01','2023-02-20','2023-04-07','2023-04-21','2023-05-01', '2023-06-08','2023-09-07','2023-10-12','2023-11-02','2023-11-15']),
+    'ds': pd.to_datetime(['2023-01-01','2023-02-20','2023-04-07','2023-04-21','2023-05-01','2023-06-08','2023-09-07','2023-10-12','2023-11-02','2023-11-15']),
     'lower_window': 0,
     'upper_window': 1
 })
@@ -124,6 +77,8 @@ def compute_projection_all(all_uf, horizon, feriados):
             proj[uf] = 0.0
             monthly[uf] = pd.DataFrame(columns=['ds','yhat'])
             continue
+        # Converter y para float para o Prophet
+        df_u["y"] = df_u["y"].astype(float)
         model = Prophet(holidays=feriados)
         model.fit(df_u)
         last_date = df_u["ds"].max()
@@ -152,8 +107,7 @@ for uf in ufs_selected:
         continue
 
     # Garantir que y seja inteiro para exibir corretamente
-    df_prophet["y"] = pd.to_numeric(df_prophet["y"], errors="coerce").round().astype('Int64')
-    df_prophet = df_prophet.dropna(subset=["y"])
+    df_prophet["y"] = df_prophet["y"].astype(int)
 
     # Construir modelo e previsão
     model = Prophet(holidays=feriados)
@@ -163,7 +117,7 @@ for uf in ufs_selected:
     forecast = model.predict(future)
     forecast_future = forecast[forecast["ds"] > last_date]
 
-    # Ajustar valores para integer para hover/plot
+    # Reforçar inteiros no forecast
     if not forecast_future.empty:
         forecast_future["yhat"] = forecast_future["yhat"].round().astype(int)
         forecast_future["yhat_lower"] = forecast_future["yhat_lower"].round().astype(int)
@@ -175,7 +129,7 @@ for uf in ufs_selected:
     # Histórico
     fig.add_trace(go.Scatter(
         x=df_prophet["ds"],
-        y=df_prophet["y"].astype(int),
+        y=df_prophet["y"],
         mode="lines",
         name="Histórico",
         hovertemplate="Data: %{x|%b/%Y}<br>Reservas: %{y:.0f}"
@@ -226,7 +180,7 @@ for uf in ufs_selected:
             "yhat_lower": "Intervalo Inferior 2025",
             "yhat_upper": "Intervalo Superior 2025"
         }, inplace=True)
-        forecast_table["Mês/Ano"] = forecast_table["ds"].apply(lambda d: mes_br_port(d))
+        forecast_table["Mês/Ano"] = forecast_table["ds"].apply(lambda d: d.strftime("%b/%Y"))
         st.dataframe(forecast_table[["Mês/Ano","Previsão 2025","Intervalo Inferior 2025","Intervalo Superior 2025"]])
 
     # Resumo da UF (opcional)
@@ -236,28 +190,8 @@ for uf in ufs_selected:
     st.markdown(f"Resumo da UF {uf}:")
     colA, colB, colC = st.columns(3)
     with colA:
-        st.metric(label="2023 (Executado)", value=br_int(total_2023_uf))
+        st.metric(label="2023 (Executado)", value=str(total_2023_uf))
     with colB:
-        st.metric(label="2024 (Executado)", value=br_int(total_2024_uf))
+        st.metric(label="2024 (Executado)", value=str(total_2024_uf))
     with colC:
-        st.metric(label="Projeção 2025 (UF)", value=br_int(proj_uf_2025))
-
-# ------------------------
-# ℹ️ Como é calculada a tendência
-# ------------------------
-st.markdown("""
-### ℹ️ Como é calculada a tendência
-A projeção é feita usando o modelo Facebook Prophet, que considera:
-- Tendência de longo prazo
-- Sazonalidade (padrões anuais, mensais e semanais)
-- Feriados e férias escolares
-- Intervalo de confiança (faixa de incerteza na previsão)
-""")
-
-# Observação / extras (opcional)
-st.markdown("""
-Sugestões adicionais:
-- Exportar tabelas para CSV/Excel
-- Verificar sazonalidade mensal por UF com heatmap
-- Ajustar o modelo com dados adicionais para melhor calibração
-""")
+        st.metric(label="Projeção 2025 (UF)", value=str(proj_uf_2025))
