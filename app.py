@@ -63,22 +63,19 @@ def br_int(n):
     s = f"{i:,}"
     return s.replace(",", ".")
 
-def br_float(n, dec=0):
+# Cuidado com casas decimais na projeção (usa sem decimals para manter BR)
+def br_int0(n):
     if pd.isna(n):
         return "-"
-    s = f"{float(n):,.{dec}f}"
-    s = s.replace(",", "X").replace(".", ",").replace("X", ".")
-    return s
+    i = int(n)
+    return f"{i:,}".replace(",", ".")
 
 st.title("📊 Tendência de Reservas + Projeção")
 
 # ------------------------
-# Dados e projeção (sem botão)
+# Sidebar
 # ------------------------
-# UFs disponíveis
 ufs = sorted(df["UF"].dropna().unique())
-
-# Seleção de UFs pelo usuário
 ufs_selected = st.sidebar.multiselect("Selecione os estados (UF)", ufs, default=ufs[:1])
 
 start_date = st.sidebar.date_input("Data inicial", df["ds"].min())
@@ -109,7 +106,7 @@ ferias_escolares = pd.DataFrame({
 feriados = pd.concat([feriados_nacionais, ferias_escolares])
 
 # ------------------------
-# Função para calcular projeções 2025 por UF (sem botão)
+# Função de projeção para todas as UFs (executada na inicialização para usar no cards)
 # ------------------------
 def compute_projection_all(all_uf, horizon, feriados):
     proj = {}
@@ -131,9 +128,67 @@ def compute_projection_all(all_uf, horizon, feriados):
         monthly[uf] = forecast_future[forecast_future["ds"].dt.year == 2025][["ds","yhat"]]
     return proj, monthly
 
-# Prepara projeção para todas as UFs (executa na inicialização)
+# Projeção total por UF já calculada (usa na tela de cards)
 all_ufs = sorted(df["UF"].dropna().unique())
 proj_2025_by_all, monthly_2025_by_uf_all = compute_projection_all(all_ufs, horizon, feriados)
+
+# ------------------------
+# Cards de resumo executivo
+# ------------------------
+total_2023_global = int(df[(df["ds"].dt.year == 2023) & (df["y"].notna())]["y"].sum())
+total_2024_global = int(df[(df["ds"].dt.year == 2024) & (df["y"].notna())]["y"].sum())
+proj_total_2025 = int(sum(proj_2025_by_all.values())) if proj_2025_by_all else 0
+
+# Maior queda projetada (2025/2023 vs 2025/2024)
+queda_2025_2023 = {}
+queda_2025_2024 = {}
+
+for uf in all_ufs:
+    y2023 = int(df[(df["UF"] == uf) & (df["ds"].dt.year == 2023)]['y'].sum()) if not df[(df["UF"] == uf) & (df["ds"].dt.year == 2023)].empty else 0
+    y2024 = int(df[(df["UF"] == uf) & (df["ds"].dt.year == 2024)]['y'].sum()) if not df[(df["UF"] == uf) & (df["ds"].dt.year == 2024)].empty else 0
+    proj_u = proj_2025_by_all.get(uf, 0.0)
+    queda_2025_2023[uf] = max(0, y2023 - int(proj_u))
+    queda_2025_2024[uf] = max(0, y2024 - int(proj_u))
+
+# Encontrar UF com maior queda (entre as duas métricas)
+uf_max_2023 = max(queda_2025_2023, key=queda_2025_2023.get) if queda_2025_2023 else None
+valor_max_2023 = queda_2025_2023.get(uf_max_2023, 0) if uf_max_2023 else 0
+
+uf_max_2024 = max(queda_2025_2024, key=queda_2025_2024.get) if queda_2025_2024 else None
+valor_max_2024 = queda_2025_2024.get(uf_max_2024, 0) if uf_max_2024 else 0
+
+# Escolher maior entre 2023 e 2024
+uf_maior_queda = uf_max_2023 if valor_max_2023 >= valor_max_2024 else uf_max_2024
+maior_queda = valor_max_2023 if valor_max_3 := (valor_max_2023 >= valor_max_2024) else valor_max_2024
+# Corrige caso não haja UF
+if uf_maior_queda is None:
+    uf_maior_queda = "-"
+    maior_queda = 0
+
+# Impacto relativo
+percent_impacto = 0.0
+if uf_maior_queda != "-" and uf_maior_queda is not None:
+    total_2023_uf = int(df[(df["UF"] == uf_maior_queda) & (df["ds"].dt.year == 2023)]['y'].sum()) 
+    if total_2023_uf > 0:
+        percentage = (maior_queda / total_2023_uf) * 100
+        percent_impacto = round(percentage, 2)
+
+# Layout em cards (4 colunas)
+col1, col2, col3, col4 = st.columns(4)
+
+with col1:
+    st.metric(label="Total 2023 (Executado)", value=br_int(total_2023_global))
+with col2:
+    st.metric(label="Total 2024 (Executado)", value=br_int(total_2024_global))
+with col3:
+    st.metric(label="Projeção Total 2025", value=br_int0(proj_total_2025))
+
+with col4:
+    if uf_maior_queda != "-":
+        st.metric(label=f"Maior Queda Projetada (UF {uf_maior_queda})", value=br_int(maior_queda))
+        st.caption(f"Impacto relativo: {percent_impacto:.2f}% do total de 2023 em {uf_maior_queda}")
+    else:
+        st.metric(label="Maior Queda Projetada", value="-")
 
 # ------------------------
 # Histórico e Projeção por UF (com dados BR)
@@ -145,9 +200,7 @@ for uf in ufs_selected:
         continue
 
     total_2023_2024 = df[(df["UF"] == uf) & (df["ds"].dt.year.isin([2023,2024]))]["y"].sum()
-    has_data = (total_2023_2024 is not None) and (total_2023_2024 > 0)
-
-    if not has_data:
+    if total_2023_2024 <= 0:
         # Esconder UFs sem dados suficientes
         continue
 
@@ -160,7 +213,7 @@ for uf in ufs_selected:
 
     # Projeção 2025 (somatório yhat de 2025)
     proj_2025 = forecast_future[forecast_future["ds"].dt.year == 2025]["yhat"].sum()
-    # Guarda na sessão (para uso rápido se precisar)
+    # Armazena na sessão para uso posterior se necessário
     st.session_state.setdefault("proj_2025_by_all", {})
     st.session_state["proj_2025_by_all"][uf] = float(proj_2025) if forecast_future is not None else 0.0
 
@@ -197,58 +250,6 @@ for uf in ufs_selected:
     }))
 
 # ------------------------
-# Cards de resumo executivo
-# ------------------------
-# Totais globais
-total_2023_global = int(df[df["ds"].dt.year == 2023]["y"].sum())
-total_2024_global = int(df[df["ds"].dt.year == 2024]["y"].sum())
-proj_total_2025 = int(sum([v for v in proj_2025_by_all.values()])) if proj_2025_by_all else 0
-
-# Maior queda (Proj) entre as UFs (2025 vs 2023/2024)
-queda_2025_2023 = {}
-queda_2025_2024 = {}
-for uf in all_ufs:
-    y2023 = int(soma_por_ano := df[(df["UF"] == uf) & (df["ds"].dt.year == 2023)]['y'].sum()) if not df[(df["UF"] == uf) & (df["ds"].dt.year == 2023)].empty else 0
-    y2024 = int(df[(df["UF"] == uf) & (df["ds"].dt.year == 2024)]['y'].sum()) if not df[(df["UF"] == uf) & (df["ds"].dt.year == 2024)].empty else 0
-    proj_u = proj_2025_by_all.get(uf, 0.0)
-    queda_2025_2023[uf] = max(0, y2023 - int(proj_u))
-    queda_2025_2024[uf] = max(0, y2024 - int(proj_u))
-
-uf_maior_queda = max(queda_2025_2023, key=queda_2025_2023.get) if quedan := queda_2025_2023 else None
-maior_queda_2025_2023 = queda_2025_2023.get(uf_maior_queda, 0) if uf_maior_queda else 0
-# Impacto relativo (em relação ao total de 2023)
-percent_impacto = 0.0
-if uf_maior_queda:
-    total_2023_uf = int(df[(df["UF"] == uf_maior_queda) & (df["ds"].dt.year == 2023)]['y'].sum())
-    if total_2023_uf > 0:
-        percent_impacto = (maior_queda_2025_2023 / total_2023_uf) * 100
-
-# Layout em cards (4 colunas)
-col1, col2, col3, col4 = st.columns(4)
-
-with col1:
-    st.metric(label="Total 2023 (Executado)", value=br_int(total_2023_global))
-with col2:
-    st.metric(label="Total 2024 (Executado)", value=br_int(total_2024_global))
-with col3:
-    st.metric(label="Projeção Total 2025", value=br_int(proj_total_2025))
-
-with col4:
-    uf_label = uf_maior_queda if uf_maior_queda else "-"
-    st.metric(label=f"Maior Queda 2025/2023 (Proj) - UF {uf_label}", value=br_int(maior_queda_2025_2023))
-
-# Linha extra com impacto relativo (opcional)
-st.markdown(f"Impacto relativo da maior queda em 2025/2023: {percent_impacto:.2f}%")
-
-# Observação
-st.markdown("""
-Notas:
-- Os números são formatados em BR (1.000,00 etc.). 
-- UFs sem dados suficientes são ocultadas das projeções para evitar números enganosos.
-- A projeção 2025 é calculada por UF com o modelo Prophet, levando em conta feriados e férias escolares.
-""")
-
-# ------------------------
 # ℹ️ Como é calculada a tendência
 # ------------------------
 st.markdown("""
@@ -265,5 +266,5 @@ st.markdown("""
 Sugestões adicionais:
 - Exportar tabelas para CSV/Excel
 - Verificar sazonalidade mensal por UF com heatmap
-- Ajustar o modelo com dados adicionais (ex.: 2018-2022) para melhor calibração
+- Ajustar o modelo com dados adicionais para melhor calibração
 """)
