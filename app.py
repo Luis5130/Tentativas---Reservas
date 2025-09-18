@@ -20,15 +20,12 @@ def parse_br_number(x):
         return float(x)
     s = str(x).strip().replace(" ", "")
     if "." in s and "," in s:
-        # "1.234,56" -> removê milhares, vírgula vira ponto
         s = s.replace(".", "")
         s = s.replace(",", ".")
     else:
         if "." in s:
-            # "40.917" -> 40917
             s = s.replace(".", "")
         if "," in s:
-            # "447,540" -> 447.540
             s = s.replace(",", ".")
     try:
         return float(s)
@@ -55,7 +52,9 @@ if "UF" not in df.columns:
     st.error("Coluna UF não encontrada nos dados.")
     st.stop()
 
+# ------------------------
 # Funções de formatação BR
+# ------------------------
 def br_int(n):
     if pd.isna(n):
         return "-"
@@ -63,26 +62,13 @@ def br_int(n):
     s = f"{i:,}"
     return s.replace(",", ".")
 
-def br_int0(n):
-    if pd.isna(n):
-        return "-"
-    i = int(n)
-    return f"{i:,}".replace(",", ".")
-
-def br_float(n, dec=2):
-    if pd.isna(n):
-        return "-"
-    s = f"{float(n):,.{dec}f}"
-    s = s.replace(",", "X").replace(".", ",").replace("X", ".")
-    return s
-
 # ------------------------
-# Título
+# Título e layout
 # ------------------------
 st.title("Tentativa de Reservas + Tendência")
 
 # ------------------------
-# Sidebar - UF e período
+# Sidebar: UF + Período
 # ------------------------
 ufs = sorted(df["UF"].dropna().unique())
 ufs_selected = st.sidebar.multiselect("Selecione os estados (UF)", ufs, default=ufs[:1])
@@ -115,7 +101,7 @@ ferias_escolares = pd.DataFrame({
 feriados = pd.concat([feriados_nacionais, ferias_escolares])
 
 # ------------------------
-# Função de projeção para todas as UFs (calculada na inicialização)
+# Função de projeção por UF (pré-calc na inicialização)
 # ------------------------
 def compute_projection_all(all_uf, horizon, feriados):
     proj = {}
@@ -137,14 +123,14 @@ def compute_projection_all(all_uf, horizon, feriados):
         monthly[uf] = forecast_future[forecast_future["ds"].dt.year == 2025][["ds","yhat"]]
     return proj, monthly
 
-# Projeção total por UF (já calculada)
+# Projeção total por UF (pré-calc)
 all_ufs = sorted(df["UF"].dropna().unique())
 proj_2025_by_all, monthly_2025_by_uf_all = compute_projection_all(all_ufs, horizon, feriados)
 
 # ------------------------
 # Histórico e Projeção por UF (com dados BR)
 # ------------------------
-st.subheader("🔮 Histórico e Projeção por UF (selecionadas)")
+st.subheader("Histórico e Projeção por UF (selecionadas)")
 for uf in ufs_selected:
     df_prophet = df_uf[df_uf["UF"] == uf][["ds","y"]].copy()
     if df_prophet.empty:
@@ -171,14 +157,14 @@ for uf in ufs_selected:
     st.session_state["monthly_2025_by_uf_all"][uf] = monthly_2025
 
     # Histórico
-    st.subheader(f"📈 Histórico - {uf}")
+    st.subheader(f"Histórico - {uf}")
     fig_hist = px.line(df_prophet, x="ds", y="y", title=f"Histórico - {uf}")
     st.plotly_chart(fig_hist, use_container_width=True)
 
     # Projeção
-    st.subheader(f"📊 Projeção - {uf}")
+    st.subheader(f"Projeção - {uf}")
     fig_forecast = px.line(title=f"Projeção de Reservas - {uf}")
-    fig_forecast.add_scatter(x=df_prophet["ds"], y=df_prophet["y"], mode="lines+markers", name="Histórico")
+    fig_forecast.add_scatter(x=df_prophet["ds"], y=df_prophet["y"], mode="lines", name="Histórico")
     fig_forecast.add_scatter(x=forecast_future["ds"], y=forecast_future["yhat"], mode="lines", name="Previsão 2025")
     fig_forecast.add_scatter(x=forecast_future["ds"], y=forecast_future["yhat_lower"], mode="lines",
                              line=dict(dash="dot", color="gray"), name="Intervalo Inferior 2025")
@@ -187,7 +173,7 @@ for uf in ufs_selected:
     st.plotly_chart(fig_forecast, use_container_width=True)
 
     # Tabela de Projeção
-    st.subheader(f"📊 Tabela de Projeção - {uf}")
+    st.subheader(f"Tabela de Projeção - {uf}")
     forecast_table = forecast_future[["ds","yhat","yhat_lower","yhat_upper"]].copy()
     forecast_table["Mês/Ano"] = forecast_table["ds"].dt.strftime("%b/%Y")
     st.dataframe(forecast_table[["Mês/Ano","yhat","yhat_lower","yhat_upper"]].rename(columns={
@@ -195,6 +181,23 @@ for uf in ufs_selected:
         "yhat_lower": "Intervalo Inferior 2025",
         "yhat_upper": "Intervalo Superior 2025"
     }))
+
+# ------------------------
+# Resumo por UF (opcional) para checar AC, SP etc.
+# ------------------------
+uf_detail = st.sidebar.selectbox("Ver detalhes de uma UF (opcional):", ["Nenhum"] + all_ufs)
+if uf_detail != "Nenhum":
+    total_2023_uf = int(df[(df["UF"] == uf_detail) & (df["ds"].dt.year == 2023)]['y'].sum())
+    total_2024_uf = int(df[(df["UF"] == uf_detail) & (df["ds"].dt.year == 2024)]['y'].sum())
+    proj_uf_2025 = int(proj_2025_by_all.get(uf_detail, 0.0))
+    st.markdown(f"Resumo da UF {uf_detail}:")
+    colA, colB, colC = st.columns(3)
+    with colA:
+        st.metric(label="2023 (Executado)", value=br_int(total_2023_uf))
+    with colB:
+        st.metric(label="2024 (Executado)", value=br_int(total_2024_uf))
+    with colC:
+        st.metric(label="Projeção 2025 (UF)", value=br_int(proj_uf_2025))
 
 # ------------------------
 # ℹ️ Como é calculada a tendência
@@ -206,4 +209,12 @@ A projeção é feita usando o modelo Facebook Prophet, que considera:
 - Sazonalidade (padrões anuais, mensais e semanais)
 - Feriados e férias escolares
 - Intervalo de confiança (faixa de incerteza na previsão)
+""")
+
+# Observação / extras (opcional)
+st.markdown("""
+Sugestões adicionais:
+- Exportar tabelas para CSV/Excel
+- Verificar sazonalidade mensal por UF com heatmap
+- Ajustar o modelo com dados adicionais para melhor calibração
 """)
