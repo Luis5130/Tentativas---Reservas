@@ -22,7 +22,7 @@ st.title("📊 Tendência de Reservas + Projeção")
 # ------------------------
 # Sidebar
 # ------------------------
-ufs = sorted(df["UF"].unique())
+ufs = sorted(df["UF"].dropna().unique())
 ufs_selected = st.sidebar.multiselect("Selecione os estados", ufs, default=ufs[:1])
 
 start_date = st.sidebar.date_input("Data inicial", df["ds"].min())
@@ -30,7 +30,7 @@ end_date = st.sidebar.date_input("Data final", df["ds"].max())
 horizon = st.sidebar.slider("Meses a projetar", 1, 24, 12)
 
 # Filtrar dados por UF(s) e período
-df_uf = df[df["UF"].isin(ufs_selected) & (df["ds"] >= pd.to_datetime(start_date)) & (df["ds"] <= pd.to_datetime(end_date))]
+df_uf = df[(df["UF"].isin(ufs_selected)) & (df["ds"] >= pd.to_datetime(start_date)) & (df["ds"] <= pd.to_datetime(end_date))]
 
 # ------------------------
 # Feriados nacionais + férias escolares
@@ -53,20 +53,74 @@ ferias_escolares = pd.DataFrame({
 feriados = pd.concat([feriados_nacionais, ferias_escolares])
 
 # ------------------------
-# Loop por UF para gráficos e projeção
+# Calcular tração histórica por UF (para ranking)
 # ------------------------
-st.subheader("🔮 Tendência / Projeção por UF")
+df_years = df_uf.copy()
+df_years["Year"] = df_years["ds"].dt.year
+pivot_years = df_years.pivot_table(index="UF", columns="Year", values="y", aggfunc="sum", fill_value=0).reset_index()
+
+# Garantir colunas 2023, 2024, 2025 existindo
+for yr in [2023, 2024, 2025]:
+    if yr not in pivot_years.columns:
+        pivot_years[yr] = 0
+
+def get_year_value(uf, year):
+    row = pivot_years[pivot_years["UF"] == uf]
+    if not row.empty and year in row.columns:
+        return int(row.iloc[0][year])
+    return 0
+
+# ------------------------
+# Ranking de Maiores Quedas por UF (Base Real)
+# (exclui explicitamente "2023" como coluna, utiliza 2023/2024/2025 para as diferenças)
+# ------------------------
+queda_2024_2023_real = []
+queda_2025_2023_real = []
+queda_2025_2024_real = []
+
 for uf in ufs_selected:
-    df_prophet = df_uf[df_uf["UF"] == uf][["ds", "y"]].copy()
+    y2023 = get_year_value(uf, 2023)
+    y2024 = get_year_value(uf, 2024)
+    y2025 = get_year_value(uf, 2025)
+    queda_2024_2023_real.append(max(0, y2023 - y2024))
+    queda_2025_2023_real.append(max(0, y2023 - y2025))
+    queda_2025_2024_real.append(max(0, y2024 - y2025))
+
+ranking_real = pd.DataFrame({
+    "UF": ufs_selected,
+    "Queda 2024/2023 (Real)": queda_2024_2023_real,
+    "Queda 2025/2023 (Real)": queda_2025_2023_real,
+    "Queda 2025/2024 (Real)": queda_2025_2024_real
+})
+ranking_real["Max Queda (Real)"] = ranking_real[
+    ["Queda 2024/2023 (Real)", "Queda 2025/2023 (Real)", "Queda 2025/2024 (Real)"]
+].max(axis=1)
+ranking_real_sorted = ranking_real.sort_values("Max Queda (Real)", ascending=False)
+
+st.subheader("📉 Ranking de Maiores Quedas por UF (Base Real)")
+st.dataframe(ranking_real_sorted[["UF","Max Queda (Real)","Queda 2024/2023 (Real)","Queda 2025/2023 (Real)","Queda 2025/2024 (Real)"]])
+
+# ------------------------
+# Projeção por UF (2025) + Gráficos
+# ------------------------
+proj_2025_by_uf = {}
+
+st.subheader("🔮 Tendência / Projeção por UF (com Projeção 2025)")
+for uf in ufs_selected:
+    df_prophet = df_uf[df_uf["UF"] == uf][["ds","y"]].copy()
     if df_prophet.empty:
         continue
 
     model = Prophet(holidays=feriados)
     model.fit(df_prophet)
+    last_date = df_prophet["ds"].max()
     future = model.make_future_dataframe(periods=horizon, freq="MS")
     forecast = model.predict(future)
-    last_date = df_prophet["ds"].max()
     forecast_future = forecast[forecast["ds"] > last_date]
+
+    # Soma da projeção para 2025 (yhat)
+    proj_2025 = forecast_future[forecast_future["ds"].dt.year == 2025]["yhat"].sum()
+    proj_2025_by_uf[uf] = proj_2025
 
     # Gráfico Histórico
     st.subheader(f"📈 Histórico - {uf}")
@@ -84,77 +138,67 @@ for uf in ufs_selected:
                              line=dict(dash="dot", color="gray"), name="Intervalo Superior")
     st.plotly_chart(fig_forecast, use_container_width=True)
 
-    # Tabela de projeção com variação %
+    # Tabela de Projeção
     st.subheader(f"📊 Tabela de Projeção - {uf}")
-    forecast_table = forecast_future[["ds", "yhat", "yhat_lower", "yhat_upper"]].copy()
+    forecast_table = forecast_future[["ds","yhat","yhat_lower","yhat_upper"]].copy()
     forecast_table["Mês/Ano"] = forecast_table["ds"].dt.strftime("%b/%Y")
 
-    anos = sorted(df_prophet["ds"].dt.year.unique())
-    for ano in anos:
-        df_ano = df_prophet[df_prophet["ds"].dt.year == ano].copy()
-        df_ano["Mês"] = df_ano["ds"].dt.month
-        df_ano.set_index("Mês", inplace=True)
-        forecast_table[f"Vs {ano} (%)"] = forecast_table["ds"].dt.month.map(
-            lambda m: ((forecast_table.set_index(forecast_table["ds"].dt.month)["yhat"].get(m,0) - df_ano["y"].get(m,0)) / df_ano["y"].get(m,1) * 100)
-        )
+    st.metric(label=f"Projeção 2025 (UF {uf})", value=f"{int(proj_2025_by_uf.get(uf,0)):,}")
 
-    forecast_table.rename(columns={
-        "yhat": "Previsão",
-        "yhat_lower": "Intervalo Inferior",
-        "yhat_upper": "Intervalo Superior"
-    }, inplace=True)
-    st.dataframe(forecast_table[["Mês/Ano","Previsão","Intervalo Inferior","Intervalo Superior"] + [col for col in forecast_table.columns if "Vs" in col]])
+    st.dataframe(forecast_table[["Mês/Ano","yhat","yhat_lower","yhat_upper"]])
 
 # ------------------------
-# Ranking de Maiores Quedas por UF
+# Ranking de Maiores Quedas com Projeção (2025)
 # ------------------------
-st.subheader("📉 Ranking de Maiores Quedas por UF")
-df_ranking = df.copy()
-df_ranking["Ano"] = df_ranking["ds"].dt.year
+# Preparar valores de 2023/2024 por UF (real) já calculados acima
+def get_year_val_safe(uf, year):
+    row = pivot_years[pivot_years["UF"] == uf]
+    if not row.empty and year in row.columns:
+        return int(row.iloc[0][year])
+    return 0
 
-ranking = df_ranking.pivot_table(index="UF", columns="Ano", values="y", aggfunc="sum").reset_index()
+# Montar listas para o ranking de projeção
+queda_2024_2023_real_list = [max(0, get_year_val_safe(uf, 2023) - get_year_val_safe(uf, 2024)) for uf in ufs_selected]
+queda_2025_2023_proj_list = [max(0, get_year_val_safe(uf, 2023) - proj_2025_by_uf.get(uf, 0.0)) for uf in ufs_selected]
+queda_2025_2024_proj_list = [max(0, get_year_val_safe(uf, 2024) - proj_2025_by_uf.get(uf, 0.0)) for uf in ufs_selected]
 
-# Comparação dinâmica
-cols_perda = []
-for ano in ranking.columns[1:]:  # Ignora UF
-    if int(ano) > 2025:
-        ranking[f"Perda Absoluta {ano}"] = ranking[2025] - ranking[ano]
-    else:
-        ranking[f"Perda Absoluta {ano}"] = ranking[2023] - ranking[ano]
-    cols_perda.append(f"Perda Absoluta {ano}")
+ranking_proj = pd.DataFrame({
+    "UF": ufs_selected,
+    "Queda 2024/2023 (Real)": queda_2024_2023_real_list,
+    "Queda 2025/2023 (Proj)": queda_2025_2023_proj_list,
+    "Queda 2025/2024 (Proj)": queda_2025_2024_proj_list
+})
+ranking_proj["Max Queda (Proj)"] = ranking_proj[
+    ["Queda 2024/2023 (Real)", "Queda 2025/2023 (Proj)", "Queda 2025/2024 (Proj)"]
+].max(axis=1)
+ranking_proj_sorted = ranking_proj.sort_values("Max Queda (Proj)", ascending=False)
 
-ranking[cols_perda] = ranking[cols_perda].apply(pd.to_numeric, errors='coerce').fillna(0)
-ranking["Max Perda Absoluta"] = ranking[cols_perda].max(axis=1)
-ranking_sorted = ranking.sort_values("Max Perda Absoluta", ascending=False)
-st.dataframe(ranking_sorted[["UF","Max Perda Absoluta"] + cols_perda])
-
-# ------------------------
-# Tabela Nacional Consolidada
-# ------------------------
-st.subheader("🌎 Projeção Nacional Consolidada")
-df_total = df.copy()
-df_total_grouped = df_total.groupby("ds")["y"].sum().reset_index()
-
-model_total = Prophet(holidays=feriados)
-model_total.fit(df_total_grouped)
-future_total = model_total.make_future_dataframe(periods=horizon, freq="MS")
-forecast_total = model_total.predict(future_total)
-forecast_total_future = forecast_total[forecast_total["ds"] > df_total_grouped["ds"].max()]
-
-forecast_total_future["Mês/Ano"] = forecast_total_future["ds"].dt.strftime("%b/%Y")
-forecast_total_future.rename(columns={"yhat":"Previsão","yhat_lower":"Intervalo Inferior","yhat_upper":"Intervalo Superior"}, inplace=True)
-st.dataframe(forecast_total_future[["Mês/Ano","Previsão","Intervalo Inferior","Intervalo Superior"]])
+st.subheader("📉 Ranking de Maiores Quedas por UF (Projeção 2025)")
+st.dataframe(ranking_proj_sorted[["UF","Max Queda (Proj)","Queda 2024/2023 (Real)","Queda 2025/2023 (Proj)","Queda 2025/2024 (Proj)"]])
 
 # ------------------------
-# Explicativo
+# Projeção Nacional Consolidada
 # ------------------------
+# Projeção 2025 nacional: soma das projeções por UF
+proj_nacional_2025 = sum(proj_2025_by_uf.values()) if proj_2025_by_uf else 0
+
+st.subheader("🌎 Projeção Nacional Consolidada (2025)")
+st.metric(label="Reservas projetadas em 2025 (nacional)", value=f"{int(proj_nacional_2025):,}")
+
+# Observação
 st.markdown("""
 ### ℹ️ Como é calculada a tendência
 A projeção é feita usando o modelo **Facebook Prophet**, que considera:
-- **Tendência de longo prazo** (crescimento ou queda ao longo do tempo)  
-- **Sazonalidade** (padrões anuais, mensais e semanais)  
-- **Feriados e férias escolares** (como Natal, Ano Novo e períodos de férias)  
-- **Intervalo de confiança** (faixa de incerteza na previsão)  
+- Tendência de longo prazo
+- Sazonalidade
+- Feriados e férias escolares
+- Intervalo de confiança
+Os rankings mostram onde a queda absoluta é maior em cada UF, tanto com base nos dados reais até 2024 quanto com a projeção para 2025.
+""")
 
-O ranking de perdas mostra **onde a queda absoluta é maior** em cada UF, permitindo focar nas regiões críticas.
+# Explicação adicional (opcional)
+st.markdown("""
+Se preferir, posso adaptar para:
+- apresentar apenas uma tabela consolidada com as três quedas por UF (sem separação Real/Proj)
+- exibir as projeções com gráficos adicionais ou versões compactas
 """)
