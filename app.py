@@ -12,7 +12,10 @@ def parse_br_number(x):
     """
     Interpreta números no formato BR (ponto como separador de milhares,
     vírgula como separador decimal). Retorna float ou NaN.
-    Ex.: "40.917" -> 40917.0, "1.234,56" -> 1234.56
+    Exemplos:
+      "40.917" -> 40917.0
+      "1.234,56" -> 1234.56
+      "447,540"  -> 447.540
     """
     if pd.isna(x):
         return None
@@ -20,12 +23,15 @@ def parse_br_number(x):
         return float(x)
     s = str(x).strip().replace(" ", "")
     if "." in s and "," in s:
+        # "1.234,56" -> remove milhares, vírgula vira ponto
         s = s.replace(".", "")
         s = s.replace(",", ".")
     else:
         if "." in s:
+            # "40.917" -> 40917
             s = s.replace(".", "")
         if "," in s:
+            # "447,540" -> 447.540
             s = s.replace(",", ".")
     try:
         return float(s)
@@ -62,8 +68,25 @@ def br_int(n):
     s = f"{i:,}"
     return s.replace(",", ".")
 
+def br_float(n, dec=2):
+    if pd.isna(n):
+        return "-"
+    s = f"{float(n):,.{dec}f}"
+    s = s.replace(",", "X").replace(".", ",").replace("X", ".")
+    return s
+
+def mes_br_port(dt):
+    month_names = {
+        1: "jan", 2: "fev", 3: "mar", 4: "abr",
+        5: "mai", 6: "jun", 7: "jul", 8: "ago",
+        9: "set", 10: "out", 11: "nov", 12: "dez"
+    }
+    m = int(dt.month)
+    y = dt.year
+    return f"{month_names[m].capitalize()}/{y}"
+
 # ------------------------
-# Título e layout
+# Título
 # ------------------------
 st.title("Tentativa de Reservas + Tendência")
 
@@ -101,7 +124,7 @@ ferias_escolares = pd.DataFrame({
 feriados = pd.concat([feriados_nacionais, ferias_escolares])
 
 # ------------------------
-# Função de projeção por UF (pré-calc na inicialização)
+# Projeção por UF (pré-calc na inicialização) + cache
 # ------------------------
 def compute_projection_all(all_uf, horizon, feriados):
     proj = {}
@@ -123,12 +146,16 @@ def compute_projection_all(all_uf, horizon, feriados):
         monthly[uf] = forecast_future[forecast_future["ds"].dt.year == 2025][["ds","yhat"]]
     return proj, monthly
 
-# Projeção total por UF (pré-calc)
+# Projeção total por UF (pré-calc) com cache
 all_ufs = sorted(df["UF"].dropna().unique())
-proj_2025_by_all, monthly_2025_by_uf_all = compute_projection_all(all_ufs, horizon, feriados)
+if "proj_2025_by_all" not in st.session_state:
+    st.session_state["proj_2025_by_all"], st.session_state["monthly_2025_by_uf_all"] = compute_projection_all(all_ufs, horizon, feriados)
+
+proj_2025_by_all = st.session_state.get("proj_2025_by_all", {})
+monthly_2025_by_uf_all = st.session_state.get("monthly_2025_by_uf_all", {})
 
 # ------------------------
-# Histórico e Projeção por UF (com dados BR)
+# Histórico por UF + Projeção por UF
 # ------------------------
 st.subheader("Histórico e Projeção por UF (selecionadas)")
 for uf in ufs_selected:
@@ -151,7 +178,6 @@ for uf in ufs_selected:
     proj_2025 = forecast_future[forecast_future["ds"].dt.year == 2025]["yhat"].sum()
     st.session_state.setdefault("proj_2025_by_all", {})
     st.session_state["proj_2025_by_all"][uf] = float(proj_2025) if forecast_future is not None else 0.0
-
     monthly_2025 = forecast_future[forecast_future["ds"].dt.year == 2025][["ds","yhat"]].copy()
     st.session_state.setdefault("monthly_2025_by_uf_all", {})
     st.session_state["monthly_2025_by_uf_all"][uf] = monthly_2025
@@ -176,14 +202,19 @@ for uf in ufs_selected:
     st.subheader(f"Tabela de Projeção - {uf}")
     forecast_table = forecast_future[["ds","yhat","yhat_lower","yhat_upper"]].copy()
     forecast_table["Mês/Ano"] = forecast_table["ds"].dt.strftime("%b/%Y")
-    st.dataframe(forecast_table[["Mês/Ano","yhat","yhat_lower","yhat_upper"]].rename(columns={
+    # BR: renomear colunas
+    forecast_table.rename(columns={
         "yhat": "Previsão 2025",
         "yhat_lower": "Intervalo Inferior 2025",
         "yhat_upper": "Intervalo Superior 2025"
-    }))
+    }, inplace=True)
+
+    # Converter Mês/Ano para BR (jan/2025 etc.)
+    forecast_table["Mês/Ano"] = forecast_table["ds"].apply(lambda d: mes_br_port(d))
+    st.dataframe(forecast_table[["Mês/Ano","Previsão 2025","Intervalo Inferior 2025","Intervalo Superior 2025"]])
 
 # ------------------------
-# Resumo por UF (opcional) para checar AC, SP etc.
+# Resumo por UF (opcional)
 # ------------------------
 uf_detail = st.sidebar.selectbox("Ver detalhes de uma UF (opcional):", ["Nenhum"] + all_ufs)
 if uf_detail != "Nenhum":
@@ -209,4 +240,12 @@ A projeção é feita usando o modelo Facebook Prophet, que considera:
 - Sazonalidade (padrões anuais, mensais e semanais)
 - Feriados e férias escolares
 - Intervalo de confiança (faixa de incerteza na previsão)
+""")
+
+# Observação / extras (opcional)
+st.markdown("""
+Sugestões adicionais:
+- Exportar tabelas para CSV/Excel
+- Verificar sazonalidade mensal por UF com heatmap
+- Ajustar o modelo com dados adicionais para melhor calibração
 """)
