@@ -5,11 +5,22 @@ import plotly.graph_objects as go
 from prophet import Prophet
 
 # ------------------------
+# Compatibilidade de cache (versões antigas/novas do Streamlit)
+# ------------------------
+def cache_decorator(ttl=300):
+    # Se a API tiver cache_data (Streamlit moderno), usa com ttl
+    if hasattr(st, "cache_data"):
+        return lambda f: st.cache_data(ttl=ttl)(f)
+    else:
+        # Versões antigas usam st.cache sem ttl
+        return st.cache
+
+# ------------------------
 # Carregar dados
 # ------------------------
 SHEET_CSV = "https://docs.google.com/spreadsheets/d/e/2PACX-1vS7OOWK8wX0B9ulh_Vtmv-R_pbVREiwknncX8oSvnZ4o5wf00gcFhyEEgo3kxW0PmturRda4wL5OCNn/pub?gid=145140176&single=true&output=csv"
 
-@st.cache_data(ttl=300)
+@cache_decorator(ttl=300)
 def load_data(url):
     df = pd.read_csv(url)
 
@@ -22,11 +33,10 @@ def load_data(url):
     if "ds" in df.columns:
         df["ds"] = pd.to_datetime(df["ds"], errors="coerce")
 
-    # 3) Tentativa de Reserva -> y (para a projeção)
-    #    Vamos manter a coluna original para cálculo de conversão também
+    # 3) Tentativa de Reserva -> y (para Prophet)
     if "Tentativa de Reserva" in df.columns:
         df["Tentativa de Reserva"] = pd.to_numeric(df["Tentativa de Reserva"], errors="coerce")
-        df["y"] = df["Tentativa de Reserva"]  # para Prophet
+        df["y"] = df["Tentativa de Reserva"]
 
     # 4) Serviços Convertidos (nova coluna de conversão)
     if "Serviços Convertidos" in df.columns:
@@ -116,10 +126,7 @@ def compute_projection_all(all_uf, horizon, feriados, df):
 
 # Projeção total por UF (pré-calc) com cache
 all_ufs = sorted(df["UF"].dropna().unique())
-if "proj_2025_by_all" not in st.session_state:
-    st.session_state["proj_2025_by_all"], st.session_state["monthly_2025_by_uf_all"] = compute_projection_all(all_ufs, horizon, feriados, df)
-proj_2025_by_all = st.session_state.get("proj_2025_by_all", {})
-monthly_2025_by_uf_all = st.session_state.get("monthly_2025_by_uf_all", {})
+proj_2025_by_all, monthly_2025_by_uf_all = compute_projection_all(all_ufs, horizon, feriados, df)
 
 # ------------------------
 # Histórico por UF + Projeção por UF
@@ -203,7 +210,6 @@ for uf in ufs_selected:
         df_prophet_conv = df_prophet[["ds","Tentativa de Reserva","Serviços Convertidos"]].copy()
         df_prophet_conv["tentativas"] = pd.to_numeric(df_prophet_conv["Tentativa de Reserva"], errors="coerce").fillna(0.0)
         df_prophet_conv["convertidos"] = pd.to_numeric(df_prophet_conv["Serviços Convertidos"], errors="coerce").fillna(0.0)
-        # Evita divisão por zero
         df_prophet_conv["conversao_pct"] = np.where(
             df_prophet_conv["tentativas"] > 0,
             (df_prophet_conv["convertidos"] / df_prophet_conv["tentativas"]) * 100.0,
@@ -227,21 +233,19 @@ for uf in ufs_selected:
         )
         st.plotly_chart(fig_conv, use_container_width=True)
 
-        # Métrica rápida: média de conversão no período mostrado
         avg_conv = float(df_prophet_conv["conversao_pct"].mean()) if not df_prophet_conv["conversao_pct"].empty else 0.0
         st.metric(label="Conversão média (%) (período exibido)", value=f"{avg_conv:.2f}%")
 
-        # Tabela resumida de conversão por mês (opcional)
-        conv_table = df_prophet_conv[["ds","tentativas","convertidos","conversao_pct"]].copy()
+        # Tabela resumida de conversão por mês
+        conv_table = df_prophet_conv[["ds","Tentativa de Reserva","Serviços Convertidos","conversao_pct"]].copy()
         conv_table.rename(columns={
-            "ds": "Data",
-            "tentativas": "Tentativas",
-            "convertidos": "Convertidos",
-            "conversao_pct": "Conversão (%)"
+            "ds":"Data",
+            "Tentativa de Reserva":"Tentativas",
+            "Serviços Convertidos":"Convertidos",
+            "conversao_pct":"Conversão (%)"
         }, inplace=True)
         conv_table["Data"] = conv_table["Data"].dt.strftime("%b/%Y")
         conv_table["Conversão (%)"] = conv_table["Conversão (%)"].round(2)
-
         st.dataframe(conv_table[["Data","Tentativas","Convertidos","Conversão (%)"]], height=260)
 
         # Exportar conversão histórica (CSV)
@@ -252,14 +256,12 @@ for uf in ufs_selected:
             file_name=f"conversao_{uf}.csv",
             mime="text/csv"
         )
-
-    # Se a conversão não estiver disponível, apenas ignore e prossiga
     else:
         st.write("Dados de Conversão não encontrados para esta UF (faltam as colunas 'Tentativa de Reserva' e/ou 'Serviços Convertidos').")
 
-    # Resumo da UF (opcional)
-    total_2023_uf = int(df[(df["UF"] == uf) & (df["ds"].dt.year == 2023)]['y'].sum()) if "y" in df.columns else 0
-    total_2024_uf = int(df[(df["UF"] == uf) & (df["ds"].dt.year == 2024)]['y'].sum()) if "y" in df.columns else 0
+    # Resumo da UF (executado)
+    total_2023_uf = int(df[(df["UF"] == uf) & (df["ds"].dt.year == 2023)].get("Tentativa de Reserva").fillna(0).sum()) if "Tentativa de Reserva" in df.columns else 0
+    total_2024_uf = int(df[(df["UF"] == uf) & (df["ds"].dt.year == 2024)].get("Tentativa de Reserva").fillna(0).sum()) if "Tentativa de Reserva" in df.columns else 0
     proj_uf_2025 = int(proj_2025_by_all.get(uf, 0.0))
     st.markdown(f"Resumo da UF {uf}:")
     colA, colB, colC = st.columns(3)
@@ -275,30 +277,8 @@ for uf in ufs_selected:
 # ------------------------
 with st.expander("ℹ️ Como funciona a projeção"):
     st.markdown("""
-    O modelo de projeção utiliza o **Facebook Prophet**, uma ferramenta de previsão de séries temporais desenvolvida para lidar com dados que apresentam:
-    - **Tendência** (crescimento ou queda ao longo do tempo)
-    - **Sazonalidade anual/mensal/semanal**
-    - **Impacto de feriados e eventos especiais**
-
-    O Prophet é um modelo **aditivo**, no qual a série é decomposta em:
-    - Tendência
-    - Sazonalidade
-    - Efeitos de feriados
-
-    Ele é robusto para dados faltantes, mudanças de tendência e funciona bem em cenários de negócio.
+    O modelo de projeção utiliza o Facebook Prophet, uma ferramenta de previsão de séries temporais.
+    - Lida com tendência e sazonalidade
+    - Considera feriados/eventos especiais
+    - Útil para dados com sazonalidade mensal/annual
     """)
-
-Notas rápidas
-- Se a planilha não trouxer as colunas “Serviços Convertidos” ou “Tentativa de Reserva”, a taxa de conversão não será plotada para aquela UF (mas a projeção continuará disponível).
-- A projeção atual é para Tentativas de Reserva. Se quiser, posso adicionar uma projeção de Conversão usando a taxa histórica.
-
-O que você ganha com isso
-- Visualização da taxa de conversão ao longo do tempo por UF.
-- Média de conversão no período mostrado.
-- Dados de conversão exportáveis para análise offline.
-- Projeção continua para as Tentativas de Reserva, mantendo a análise completa.
-
-Se quiser, também posso:
-- Projetar a Taxa de Conversão (usar uma taxa prevista baseada na média histórica para estimar Convertidos a partir de y projetado).
-- Gerar gráficos agregados (média de Conversão) para todos os UF juntos.
-- Adicionar filtros adicionais (ex.: faixa de anos, por faixa de mês, etc.).
