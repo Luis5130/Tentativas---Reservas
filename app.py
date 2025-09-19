@@ -216,3 +216,22 @@ for uf in ufs_selected:
         st.metric(label="2024 (Executado)", value=str(total_2024_uf))
     with colC:
         st.metric(label="Projeção 2025 (UF)", value=str(proj_uf_2025))
+
+# ------------------------
+# Explicação do modelo
+# ------------------------
+with st.expander("ℹ️ Como funciona a projeção"):
+    st.markdown("""
+    O modelo de projeção utiliza o **Facebook Prophet**, uma ferramenta de previsão de séries temporais desenvolvida para lidar com dados que apresentam:
+    - **Tendência** (crescimento ou queda ao longo do tempo)  
+    - **Sazonalidade anual/mensal/semanal**  
+    - **Impacto de feriados e eventos especiais**  
+
+    O Prophet é um modelo **aditivo**, no qual a série é decomposta em:
+    - Tendência  
+    - Sazonalidade  
+    - Efeitos de feriados  
+
+    Ele é robusto para dados faltantes, mudanças de tendência e funciona bem em cenários de negócio.
+    """)
+
