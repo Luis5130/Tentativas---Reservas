@@ -221,7 +221,7 @@ for uf in ufs_selected:
 # ------------------------
 # Explicação do Modelo de Projeção (expander)
 # ------------------------
-with st.expander("Explicação do Modelo de Projeção e do Cálculo de Ranking"):
+with st.expander("Explicação do Modelo de Projeção"):
     st.write("""
     Explicação do Modelo de Projeção (Prophet)
     - O modelo utilizado é o Prophet, adequado para séries temporais com sazonalidade mensal.
@@ -230,74 +230,5 @@ with st.expander("Explicação do Modelo de Projeção e do Cálculo de Ranking"
     - O horizon define quantos meses à frente vamos projetar (em meses, frequency MS).
     - A projeção para 2025 é obtida somando os yhat de todos os meses de 2025; este valor é armazenado como Projeção 2025 (proj_2025).
 
-    Cálculo do Ranking (duas métricas)
-    - 2025 Realizado + Projetado (Total até 2025)
-      - Cum 2025 = 2024 Realizado + Projeção 2025
-      - 2025 - 2024 = Projeção 2025
-      - 2025 - 2023 = Cum 2025 - 2023 Realizado
-    - Esses valores permitem comparar as UFs considerando o que já foi realizado em 2023/2024 e o que é projetado para 2025.
-    - Observação: “Realizado” para 2025 não está disponível no conjunto atual; usamos a soma 2024 Realizado + Projeção 2025 para chegar ao total até 2025.
-
-    Ideia prática
-    - Ranking 2025 vs 2024 usa a diferença entre 2024 Realizado e o total até 2025 (que é igual à Projeção 2025).
-    - Ranking 2025 vs 2023 usa o total até 2025 (Cum 2025) comparado com 2023 Realizado.
+    Observação: os feriados são definidos com datas de referência (neste código: 2023) para fins de contextualização sazonal; em produção você pode atualizar para cada ano ou torná-los dinâmicos.
     """)
-
-# ------------------------
-# Ranking geral de UF (atualizado: sem delta, com 2025 - 2024 e 2025 - 2023)
-# ------------------------
-
-# Novo cálculo de ranking: incluindo Cum 2025 e as diferenças solicitadas
-ranking_rows = []
-for uf in all_ufs:
-    total_2023 = int(df[(df["UF"] == uf) & (df["ds"].dt.year == 2023)]['y'].sum())
-    total_2024 = int(df[(df["UF"] == uf) & (df["ds"].dt.year == 2024)]['y'].sum())
-    proj_2025 = float(proj_2025_by_all.get(uf, 0.0))
-    cum_2025 = int(round(total_2024 + proj_2025))
-    # 2025 - 2024 e 2025 - 2023 (sem delta separado)
-    delta_2025_2024 = int(round(proj_2025))      # equivale a Proj 2025
-    delta_2025_2023 = int(round(cum_2025 - total_2023))
-
-    ranking_rows.append([uf, total_2023, total_2024, int(round(proj_2025)),
-                         cum_2025, delta_2025_2024, delta_2025_2023])
-
-ranking_df = pd.DataFrame(ranking_rows, columns=[
-    "UF",
-    "2023 Realizado",
-    "2024 Realizado",
-    "Proj 2025",
-    "Cum 2025 (2024 Real + Proj)",
-    "2025 - 2024",
-    "2025 - 2023"
-])
-
-# Rankings
-ranking_2025_2024 = ranking_df.sort_values(by="2025 - 2024", ascending=False).reset_index(drop=True)
-ranking_2025_2023 = ranking_df.sort_values(by="2025 - 2023", ascending=False).reset_index(drop=True)
-
-# Exibição 1: 2025 vs 2024 (2025 - 2024)
-st.subheader("Ranking Geral de UF — 2025 vs 2024 (2025 - 2024)")
-st.dataframe(
-    ranking_2025_2024[["UF","2024 Realizado","Proj 2025","Cum 2025 (2024 Real + Proj)","2025 - 2024"]].rename(columns={
-        "2024 Realizado": "2024 Realizado",
-        "Proj 2025": "Projeção 2025",
-        "Cum 2025 (2024 Real + Proj)": "Cum 2025",
-        "2025 - 2024": "2025 - 2024"
-    }).head(10)
-)
-
-# Exibição 2: 2025 vs 2023 (2025 - 2023)
-st.subheader("Ranking Geral de UF — 2025 vs 2023 (2025 - 2023)")
-st.dataframe(
-    ranking_2025_2023[["UF","2023 Realizado","2024 Realizado","Proj 2025","Cum 2025 (2024 Real + Proj)","2025 - 2023"]].rename(columns={
-        "Cum 2025 (2024 Real + Proj)":"Cum 2025",
-        "2025 - 2023": "2025 - 2023"
-    }).head(10)
-)
-
-# Observações rápidas
-# - As novas tabelas de ranking usam as mesmas UFs presentes no dataset.
-# - A coluna "Cum 2025" é a soma de 2024 Real + Projeção 2025.
-# - A coluna "2025 - 2024" mostra a Projeção 2025 (equivale ao incremento de 2024 para 2025).
-# - A coluna "2025 - 2023" mostra o ganho total de 2025 em relação a 2023.
-# - Se quiser, posso ajustar os rótulos, o número de linhas exibidas (top 5/top 10) ou exportar para CSV.
