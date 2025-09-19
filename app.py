@@ -204,36 +204,15 @@ for uf in ufs_selected:
             mime="text/csv"
         )
 
-# Resumo da UF (2023, 2024 e cum_2025)
-summary_rows = []
-for uf in all_ufs:
-    total_2023 = int(df[(df["UF"] == uf) & (df["ds"].dt.year == 2023)]['y'].sum())
-    total_2024 = int(df[(df["UF"] == uf) & (df["ds"].dt.year == 2024)]['y'].sum())
-    proj_2025 = float(proj_2025_by_all.get(uf, 0.0))
-    cum_2025 = int(round(total_2024 + proj_2025))
-    summary_rows.append([uf, total_2023, total_2024, cum_2025])
-
-summary_df = pd.DataFrame(summary_rows, columns=[
-    "UF",
-    "2023 Realizado",
-    "2024 Realizado",
-    "cum_2025 (2025 Real + Proj)"
-])
-
-st.subheader("Resumo da UF (2023, 2024 e cum_2025)")
-st.dataframe(summary_df.head(10))
-
-# ------------------------
-# Explicação do Modelo de Projeção (expander)
-# ------------------------
-with st.expander("Explicação do Modelo de Projeção"):
-    st.write("""
-    Explicação do Modelo de Projeção (Prophet)
-    - O modelo utilizado é o Prophet, adequado para séries temporais com sazonalidade mensal.
-    - Para cada UF, treinamos o modelo com o histórico (ds = data, y = reservas).
-    - Incluímos feriados nacionais e férias escolares como regressores/holiday effects para capturar efeitos sazonais/oficiais que impactam reservas.
-    - O horizon define quantos meses à frente vamos projetar (em meses, frequency MS).
-    - A projeção para 2025 é obtida somando os yhat de todos os meses de 2025; este valor é armazenado como Projeção 2025 (proj_2025).
-    - Cum_2025 (2025 Real + Proj) é calculado como 2024 Realizado + Projeção 2025.
-    - Observação: os feriados são definidos com datas de referência (neste código: 2023) para fins de contextualização sazonal; em produção você pode atualizar para cada ano ou torná-los dinâmicos.
-    """)
+    # Resumo da UF (opcional)
+    total_2023_uf = int(df[(df["UF"] == uf) & (df["ds"].dt.year == 2023)]['y'].sum())
+    total_2024_uf = int(df[(df["UF"] == uf) & (df["ds"].dt.year == 2024)]['y'].sum())
+    proj_uf_2025 = int(proj_2025_by_all.get(uf, 0.0))
+    st.markdown(f"Resumo da UF {uf}:")
+    colA, colB, colC = st.columns(3)
+    with colA:
+        st.metric(label="2023 (Executado)", value=str(total_2023_uf))
+    with colB:
+        st.metric(label="2024 (Executado)", value=str(total_2024_uf))
+    with colC:
+        st.metric(label="Projeção 2025 (UF)", value=str(proj_uf_2025))
