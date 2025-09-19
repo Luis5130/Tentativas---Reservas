@@ -218,19 +218,29 @@ for uf in ufs_selected:
         st.metric(label="Projeção 2025 (UF)", value=str(proj_uf_2025))
 
 # ------------------------
-# Explicação do Modelo de Projeção
+# Explicação do Modelo de Projeção (expander)
 # ------------------------
-st.subheader("Explicação do Modelo de Projeção")
-st.write("""
-A projeção para 2025 é obtida usando o Prophet, um modelo de séries temporais que captura:
-- a tendência (crescente/decrescente) ao longo do tempo
-- a sazonalidade mensal (componente anual já integrada pela frequência mensal)
-- feriados e eventos especiais (feriados nacionais e férias escolares, como presentes no conjunto de feriados)
+with st.expander("Explicação do Modelo de Projeção e do Cálculo de Ranking"):
+    st.write("""
+    Explicação do Modelo de Projeção (Prophet)
+    - O modelo utilizado é o Prophet, adequado para séries temporais com sazonalidade mensal.
+    - Para cada UF, treinamos o modelo com o histórico (ds = data, y = reservas).
+    - Incluímos feriados nacionais e férias escolares como regressores/holiday effects para capturar efeitos sazonais/oficiais que impactam reservas.
+    - O horizon define quantos meses à frente vamos projetar (em meses, frequency MS).
+    - A projeção para 2025 é obtida somando os yhat de todos os meses de 2025; este valor é armazenado como Projeção 2025 (proj_2025).
 
-Dados: série mensal de reservas por UF (ds = data, y = número de reservas). Para cada UF, o modelo é treinado com o histórico disponível, incorpora o conjunto de feriados (feriados_nacionais + férias_escolares), e gera previsões futuras. A projeção para 2025 é extraída de yhat. Os intervalos yhat_lower e yhat_upper representam a incerteza da projeção.
+    Cálculo do Ranking (duas métricas)
+    - 2025 Realizado + Projetado (Total até 2025)
+      - Cum 2025 = 2024 Realizado + Projeção 2025
+      - Delta 2025-2024 (Total) = Projeção 2025
+      - Delta 2025-2023 (Total) = Cum 2025 - 2023 Realizado
+    - Esses valores permitem comparar as UFs considerando o que já foi realizado em 2023/2024 e o que é projetado para 2025.
+    - Observação: “Realizado” para 2025 não está disponível no conjunto atual; trabalhamos com a soma de 2024 Realizado + Projeção 2025 para chegar a um total estimado até 2025.
 
-Observação: os feriados são definidos com datas de referência (neste código: 2023) para fins de contextualização sazonal; em produção você pode atualizar para cada ano ou torná-los dinâmicos.
-""")
+    Ideia prática
+    - Ranking 2025 vs 2024 usa a projeção (Delta 2025-2024) como proxy de crescimento para 2025.
+    - Ranking 2025 vs 2023 usa o somatório acumulado até 2025 (cum_2025) comparado com 2023 para entender o ganho relativo ao longo de todo o histórico.
+    """)
 
 # ------------------------
 # Ranking geral de UF
@@ -240,13 +250,13 @@ ranking_rows = []
 for uf in all_ufs:
     total_2023 = int(df[(df["UF"] == uf) & (df["ds"].dt.year == 2023)]['y'].sum())
     total_2024 = int(df[(df["UF"] == uf) & (df["ds"].dt.year == 2024)]['y'].sum())
-    proj_2025 = float(proj_2025_by_all.get(uf, 0.0))
+    proj_2025_val = float(proj_2025_by_all.get(uf, 0.0))
+    proj_2025_int = int(round(proj_2025_val))
+    cum_2025 = int(round(total_2024 + proj_2025_val))
+    delta_2025_2024 = proj_2025_int  # efeito de 2024 para 2025 (apenas projeção)
+    delta_2025_2023 = cum_2025 - total_2023
 
-    cum_2025 = total_2024 + int(round(proj_2025))  # 2024 Realizado + Projeção 2025 (acúmulo até 2025)
-    delta_2025_2024 = int(round(proj_2025))  # incremento de 2024 para 2025 (apenas projeção)
-    delta_2025_2023 = int(cum_2025 - total_2023)
-
-    ranking_rows.append([uf, total_2023, total_2024, int(round(proj_2025)), cum_2025, delta_2025_2024, delta_2025_2023])
+    ranking_rows.append([uf, total_2023, total_2024, proj_2025_int, cum_2025, delta_2025_2024, delta_2025_2023])
 
 ranking_df = pd.DataFrame(ranking_rows, columns=[
     "UF",
@@ -254,35 +264,33 @@ ranking_df = pd.DataFrame(ranking_rows, columns=[
     "2024 Realizado",
     "Proj 2025",
     "Cum 2025 (2024 + Proj)",
-    "Delta 2025-2024 (Proj 2025)",
-    "Delta 2025-2023 (2024+Proj-2023)"
+    "Delta 2025-2024 (Total)",
+    "Delta 2025-2023 (Total)"
 ])
 
-ranking_2025_2024 = ranking_df.sort_values(by="Delta 2025-2024 (Proj 2025)", ascending=False).reset_index(drop=True)
-ranking_2025_2023 = ranking_df.sort_values(by="Delta 2025-2023 (2024+Proj-2023)", ascending=False).reset_index(drop=True)
+ranking_2025_2024 = ranking_df.sort_values(by="Delta 2025-2024 (Total)", ascending=False).reset_index(drop=True)
+ranking_2025_2023 = ranking_df.sort_values(by="Delta 2025-2023 (Total)", ascending=False).reset_index(drop=True)
 
 st.subheader("Ranking Geral de UF — 2025 vs 2024 (Delta = Projeção 2025)")
 st.dataframe(
-    ranking_2025_2024[["UF","2024 Realizado","Proj 2025","Delta 2025-2024 (Proj 2025)"]]
+    ranking_2025_2024[["UF","2024 Realizado","Proj 2025","Delta 2025-2024 (Total)"]]
     .rename(columns={
         "2024 Realizado": "2024 Realizado",
         "Proj 2025": "Projeção 2025",
-        "Delta 2025-2024 (Proj 2025)": "Delta 2025-2024"
-    })
-    .head(10)
+        "Delta 2025-2024 (Total)": "Delta 2025-2024"
+    }).head(10)
 )
 
 st.subheader("Ranking Geral de UF — 2025 vs 2023 (Delta = 2024 Realizado + Projeção 2025 - 2023)")
 st.dataframe(
-    ranking_2025_2023[["UF","2023 Realizado","2024 Realizado","Proj 2025","Delta 2025-2023 (2024+Proj-2023)"]]
+    ranking_2025_2023[["UF","2023 Realizado","2024 Realizado","Proj 2025","Delta 2025-2023 (Total)"]]
     .rename(columns={
-        "Delta 2025-2023 (2024+Proj-2023)": "Delta 2025-2023"
-    })
-    .head(10)
+        "Delta 2025-2023 (Total)": "Delta 2025-2023"
+    }).head(10)
 )
 
 # Observações rápidas
 # - As novas tabelas de ranking usam as mesmas UFs presentes no dataset e os cálculos de 2023/2024 já existentes no dataframe.
-# - A primeira métrica (Delta 2025-2024) é, na prática, a projeção de 2025 (pois 2025 - 2024 = Proj 2025 quando considerando apenas a projeção), mas apresentamos como “Delta” para deixar claro o que está sendo medido.
-# - A segunda métrica (Delta 2025-2023) mostra o impacto total de 2024 Realizado + Projeção 2025 em relação a 2023, o que dá uma visão de desempenho agregado entre os anos.
-# - Se quiser, posso adaptar os rótulos ou exportar para CSV/tabela com mais filtros (top 5, etc.).
+# - A primeira métrica (Delta 2025-2024) é a Projeção 2025 (diferença entre 2024 e 2025), apresentada como “Delta”.
+# - A segunda métrica (Delta 2025-2023) mostra o ganho total até 2025 em relação a 2023 (2024 Realizado + Projeção 2025 - 2023).
+# - Se quiser, posso adaptar os rótulos ou exportar para CSV/tabela com mais filtros (top 5/top 10, etc.).
